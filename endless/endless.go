@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/puper/p2pwatch/listener"
+	"github.com/puper/ppgo/listener"
 )
 
 const (

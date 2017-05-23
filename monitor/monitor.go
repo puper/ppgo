@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/puper/p2pwatch/listener"
+	"github.com/puper/ppgo/listener"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/spf13/viper"

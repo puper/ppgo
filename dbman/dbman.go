@@ -3,8 +3,8 @@ package dbman
 import (
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/mysql"
-	"github.com/juju/errors"
 	"github.com/mitchellh/mapstructure"
+	"github.com/puper/errors"
 )
 
 type DBMan struct {

@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/jinzhu/gorm"
-	"github.com/juju/errors"
+	"github.com/puper/errors"
 )
 
 type RWDB struct {

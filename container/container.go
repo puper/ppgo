@@ -3,8 +3,8 @@ package container
 import (
 	"sync"
 
-	"github.com/juju/errors"
 	"github.com/mitchellh/mapstructure"
+	"github.com/puper/errors"
 )
 
 type Creator func(cfg interface{}) (interface{}, error)
