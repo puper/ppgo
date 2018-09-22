@@ -1,14 +1,14 @@
 package components
 
 import (
-	"code.int.thoseyears.com/golang/ppgo/components/dbman"
-	"code.int.thoseyears.com/golang/ppgo/components/gin"
-	"code.int.thoseyears.com/golang/ppgo/components/gin_session"
-	"code.int.thoseyears.com/golang/ppgo/components/go_redis"
-	"code.int.thoseyears.com/golang/ppgo/components/grpc_server"
-	"code.int.thoseyears.com/golang/ppgo/components/log"
-	"code.int.thoseyears.com/golang/ppgo/components/redis"
-	"code.int.thoseyears.com/golang/ppgo/engine"
+	"github.com/puper/ppgo/components/dbman"
+	"github.com/puper/ppgo/components/gin"
+	"github.com/puper/ppgo/components/gin_session"
+	"github.com/puper/ppgo/components/go_redis"
+	"github.com/puper/ppgo/components/grpc_server"
+	"github.com/puper/ppgo/components/log"
+	"github.com/puper/ppgo/components/redis"
+	"github.com/puper/ppgo/engine"
 )
 
 func Components() map[string]engine.Component {

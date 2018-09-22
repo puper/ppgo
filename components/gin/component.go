@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"code.int.thoseyears.com/golang/ppgo/engine"
-	"code.int.thoseyears.com/golang/ppgo/helpers"
 	"github.com/facebookgo/grace/gracehttp"
+	"github.com/puper/ppgo/engine"
+	"github.com/puper/ppgo/helpers"
 )
 
 type Component struct {

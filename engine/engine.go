@@ -8,7 +8,7 @@ import (
 	"sync"
 	"syscall"
 
-	"code.int.thoseyears.com/golang/ppgo/helpers"
+	"github.com/puper/ppgo/helpers"
 )
 
 type Engine struct {

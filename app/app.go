@@ -1,15 +1,15 @@
 package app
 
 import (
-	"code.int.thoseyears.com/golang/ppgo/components/dbman"
-	pgin "code.int.thoseyears.com/golang/ppgo/components/gin"
-	"code.int.thoseyears.com/golang/ppgo/components/log"
-	"code.int.thoseyears.com/golang/ppgo/components/redis"
-	"code.int.thoseyears.com/golang/ppgo/engine"
 	"github.com/Sirupsen/logrus"
 	redigo "github.com/garyburd/redigo/redis"
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
+	"github.com/puper/ppgo/components/dbman"
+	pgin "github.com/puper/ppgo/components/gin"
+	"github.com/puper/ppgo/components/log"
+	"github.com/puper/ppgo/components/redis"
+	"github.com/puper/ppgo/engine"
 )
 
 var (

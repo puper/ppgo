@@ -3,9 +3,9 @@ package dbman
 import (
 	"time"
 
-	"code.int.thoseyears.com/golang/ppgo/helpers"
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/mysql"
+	"github.com/puper/ppgo/helpers"
 )
 
 type (

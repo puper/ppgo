@@ -1,8 +1,8 @@
 package gin_session
 
 import (
-	"code.int.thoseyears.com/golang/ppgo/engine"
-	"code.int.thoseyears.com/golang/ppgo/helpers"
+	"github.com/puper/ppgo/engine"
+	"github.com/puper/ppgo/helpers"
 )
 
 type Component struct {
