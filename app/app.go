@@ -1,60 +1,50 @@
 package app
 
 import (
-	"github.com/garyburd/redigo/redis"
-	"github.com/jinzhu/gorm"
-	"github.com/juju/errors"
-	"github.com/puper/p2pwatch/container"
-	"github.com/puper/p2pwatch/dbman"
+	"code.int.thoseyears.com/golang/ppgo/components/dbman"
+	pgin "code.int.thoseyears.com/golang/ppgo/components/gin"
+	"code.int.thoseyears.com/golang/ppgo/components/log"
+	"code.int.thoseyears.com/golang/ppgo/components/redis"
+	"code.int.thoseyears.com/golang/ppgo/engine"
+	"github.com/Sirupsen/logrus"
+	redigo "github.com/garyburd/redigo/redis"
+	"github.com/gin-contrib/sessions"
+	"github.com/gin-gonic/gin"
 )
 
 var (
-	defaultContainer = container.NewContainer()
+	app *engine.Engine
 )
 
-func Register(name string, creator container.Creator) {
-	defaultContainer.Register(name, creator)
+func Create(cfg *engine.Config) *engine.Engine {
+	app = engine.New(cfg)
+	return app
 }
 
-func ConfigureAll(cfg map[string]interface{}) error {
-	return defaultContainer.ConfigureAll(cfg)
+func Get() *engine.Engine {
+	return app
 }
 
-func Get(name string) (interface{}, error) {
-	return defaultContainer.Get(name)
+func GetDB() *dbman.DBMan {
+	return app.GetInstance("db").(*dbman.DBMan)
 }
 
-func MustGet(name string) interface{} {
-	instance, _ := defaultContainer.Get(name)
-	return instance
+func GetLog(name string) *logrus.Logger {
+	return app.GetInstance("log").(*log.Log).Get(name)
 }
 
-func MustGetRedis(name string) redis.Conn {
-	pool, _ := defaultContainer.Get(name)
-	pool2, _ := pool.(redis.Pool)
-	return pool2.Get()
+func GetServer() *gin.Engine {
+	return app.GetInstance("server").(*pgin.Gin).GetEngine()
 }
 
-func GetDBMan() (*dbman.DBMan, error) {
-	instance, err := Get("dbman")
-	if err != nil {
-		return nil, err
-	}
-	if dm, ok := instance.(*dbman.DBMan); ok {
-		return dm, nil
-	}
-	return nil, errors.NotValidf("can not trans interface to dbman")
+func GetSessionMiddleware() gin.HandlerFunc {
+	return app.GetInstance("session").(gin.HandlerFunc)
 }
 
-type Model interface {
-	ConnName() string
+func GetSession(c *gin.Context) sessions.Session {
+	return sessions.Default(c)
 }
 
-func ChooseDB(model Model, write bool) *gorm.DB {
-	dbm, err := GetDBMan()
-	if err != nil {
-		return nil
-	}
-	db, _ := dbm.Get(model.ConnName(), write)
-	return db
+func GetRedis(name string) redigo.Conn {
+	return app.GetInstance("redis").(*redis.Redis).Get(name)
 }
