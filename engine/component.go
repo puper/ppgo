@@ -7,8 +7,9 @@ var (
 )
 
 type ComponentConfig struct {
-	Name   string      `json:"name"`
-	Config interface{} `json:"config"`
+	Name        string      `json:"name"`
+	BackendName string      `json:"backend_name"`
+	Config      interface{} `json:"config"`
 }
 
 type Component interface {
@@ -31,7 +32,7 @@ func (this *BaseComponent) Init(interface{}, interface{}) error {
 }
 
 func (this *BaseComponent) Start(interface{}, interface{}) error {
-	return nil
+	return MethodNotImplemented
 }
 
 func (this *BaseComponent) Stop(interface{}, interface{}) error {

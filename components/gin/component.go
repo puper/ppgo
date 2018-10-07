@@ -21,6 +21,10 @@ func (this *Component) Create(cfg interface{}) (interface{}, error) {
 	return New(c)
 }
 
+func (this *Component) Init(_, intstance interface{}) error {
+	return nil
+}
+
 func (this *Component) Start(_, instance interface{}) error {
 	gin := instance.(*Gin)
 	return gracehttp.Serve(gin.svr)

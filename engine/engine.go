@@ -8,18 +8,24 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/pkg/errors"
 	"github.com/puper/ppgo/helpers"
 )
 
 type Engine struct {
+	componentNames   []string
 	components       map[string]Component
 	componentConfigs map[string]*ComponentConfig
 	instances        map[string]interface{}
 	config           *Config
+
+	stopMutex sync.Mutex
+	stopped   bool
 }
 
 func New(cfg *Config) *Engine {
 	return &Engine{
+		componentNames:   make([]string, 0),
 		components:       make(map[string]Component),
 		componentConfigs: make(map[string]*ComponentConfig),
 		instances:        make(map[string]interface{}),
@@ -38,7 +44,7 @@ func (this *Engine) RegisterComponents(cs map[string]Component) {
 }
 
 func (this *Engine) CreateComponent(config *ComponentConfig) (interface{}, error) {
-	if c, ok := this.components[config.Name]; ok {
+	if c, ok := this.components[config.BackendName]; ok {
 		instance, err := c.Create(config.Config)
 		return instance, err
 	}
@@ -46,19 +52,28 @@ func (this *Engine) CreateComponent(config *ComponentConfig) (interface{}, error
 }
 
 func (this *Engine) Init() error {
-	for k, v := range this.config.GetStringMap("components") {
-		cc := new(ComponentConfig)
-		err := helpers.StructDecode(v, cc, "json")
+	configs := make([]*ComponentConfig, 0)
+	err := helpers.StructDecode(this.config.Get("components"), &configs, "json")
+	if err != nil {
+		return errors.WithMessage(err, "decode component config error")
+	}
+	for _, c := range configs {
+		if _, ok := this.componentConfigs[c.Name]; ok {
+			return fmt.Errorf("component `%v` already configured before", c.Name)
+		}
+		this.componentNames = append(this.componentNames, c.Name)
+		this.componentConfigs[c.Name] = c
+		instance, err := this.CreateComponent(c)
 		if err != nil {
 			return err
 		}
-		this.componentConfigs[k] = cc
-		instance, err := this.CreateComponent(cc)
-		if err != nil {
-			return err
-		}
-		this.instances[k] = instance
+		this.instances[c.Name] = instance
 
+	}
+	for _, k := range this.componentNames {
+		if err := this.components[this.componentConfigs[k].BackendName].Init(this.componentConfigs[k].Config, this.instances[k]); err != nil {
+			return errors.Wrapf(err, "init component `%v` error", k)
+		}
 	}
 	return nil
 }
@@ -69,24 +84,36 @@ func (this *Engine) GetInstance(name string) interface{} {
 
 func (this *Engine) Start() error {
 	go this.handleSysSignal()
-	wg := sync.WaitGroup{}
-	wg.Add(len(this.instances))
-	for name, instance := range this.instances {
+	stopCh := make(chan struct{}, 1)
+	for _, name := range this.componentNames {
 		go func(name string, instance interface{}) {
-			defer wg.Done()
 			log.Println(fmt.Sprintf("start component: %v", name))
-			this.components[this.componentConfigs[name].Name].Start(this.componentConfigs[name].Config, instance)
-		}(name, instance)
+			err := this.components[this.componentConfigs[name].BackendName].Start(this.componentConfigs[name].Config, instance)
+			if err != MethodNotImplemented {
+				select {
+				case stopCh <- struct{}{}:
+				default:
+				}
+			}
+		}(name, this.instances[name])
 	}
-	wg.Wait()
-	return nil
+	<-stopCh
+	return this.Stop()
 }
 
 func (this *Engine) Stop() error {
-	for name, instance := range this.instances {
-		this.components[this.componentConfigs[name].Name].Stop(this.componentConfigs[name].Config, instance)
-		log.Println(fmt.Sprintf("stop component: %v", name))
+	this.stopMutex.Lock()
+	if this.stopped == false {
+		this.stopped = true
+	} else {
+		this.stopMutex.Unlock()
+		return nil
 	}
+	for i := len(this.componentNames) - 1; i >= 0; i-- {
+		err := this.components[this.componentConfigs[this.componentNames[i]].BackendName].Stop(this.componentConfigs[this.componentNames[i]].Config, this.instances[this.componentNames[i]])
+		log.Printf("stop component: %v, %v\n", this.componentNames[i], err)
+	}
+	this.stopMutex.Unlock()
 	return nil
 }
 
