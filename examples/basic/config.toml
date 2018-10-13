@@ -1,0 +1,4 @@
+[[components]]
+name = "db"
+[[components.config.test]]
+name = "fff"
