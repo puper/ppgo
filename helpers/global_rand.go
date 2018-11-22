@@ -5,10 +5,6 @@ import (
 	"time"
 )
 
-var (
-	globalRand = rand.New(rand.NewSource(time.Now().UnixNano()))
-)
-
 func GlobalRand() *rand.Rand {
-	return globalRand
+	return rand.New(rand.NewSource(time.Now().UnixNano()))
 }

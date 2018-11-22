@@ -2,7 +2,8 @@ package dbman
 
 import "github.com/jinzhu/gorm"
 
-func (DBMan) Transaction(tx *gorm.DB, f func() error) error {
+func (DBMan) Transaction(db *gorm.DB, f func() error) error {
+	tx := db.Begin()
 	err := f()
 	if err != nil {
 		tx.Rollback()

@@ -1,7 +1,6 @@
 package helpers
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -26,7 +25,7 @@ func ParseDatetimeMinute(d string) (int64, error) {
 }
 
 func DayStart(t time.Time) (time.Time, error) {
-	return time.ParseInLocation("2006-01-02", fmt.Sprintf("%v-%v-%v", t.Year(), int(t.Month()), t.Day()), time.Local)
+	return time.ParseInLocation("2006-01-02", t.Format("2006-01-02"), time.Local)
 }
 
 func DayEnd(t time.Time) (time.Time, error) {
