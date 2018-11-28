@@ -62,3 +62,8 @@ func (this *Client) Call(class string, method string, params []interface{}, repl
 	}
 	return nil
 }
+
+func (this *Client) GetResponseError(err error) *ResponseError {
+	respErr, _ := err.(*ResponseError)
+	return respErr
+}
