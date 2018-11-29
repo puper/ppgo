@@ -6,7 +6,7 @@ func GetResponseError(err error) *ResponseError {
 }
 
 func Params(params ...interface{}) []interface{} {
-	result := make([]interface{}, len(params))
+	result := make([]interface{}, 0, len(params))
 	for _, param := range params {
 		result = append(result, param)
 	}
