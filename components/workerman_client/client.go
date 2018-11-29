@@ -68,5 +68,5 @@ func (this *Client) GetResponseError(err error) *ResponseError {
 }
 
 func (this *Client) Params(params ...interface{}) []interface{} {
-	return Params(params)
+	return params
 }
