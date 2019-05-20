@@ -65,6 +65,11 @@ func (this *Error) Reset() *Error {
 	return this
 }
 
+func (this *Error) SetType(type_ string) *Error {
+	this.Type = type_
+	return this
+}
+
 func (this *Error) SetLevel(level string) *Error {
 	this.Level = level
 	return this
