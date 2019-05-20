@@ -87,7 +87,7 @@ func (this *Error) SetMessage(message ...string) *Error {
 				result = append(result, v)
 			}
 			return result
-		})
+		}()...)
 	}
 	return this
 }
