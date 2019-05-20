@@ -6,6 +6,7 @@ import (
 	"github.com/puper/ppgo/components/gin_session"
 	"github.com/puper/ppgo/components/go_redis"
 	"github.com/puper/ppgo/components/grpc_server"
+	"github.com/puper/ppgo/components/iris"
 	"github.com/puper/ppgo/components/log"
 	"github.com/puper/ppgo/components/pprof"
 	"github.com/puper/ppgo/components/redis"
@@ -24,5 +25,6 @@ func Components() map[string]engine.Component {
 		"grpc_server":      &grpc_server.Component{},
 		"pprof":            &pprof.Component{},
 		"workerman_client": &workerman_client.Component{},
+		"iris":             &iris.Component{},
 	}
 }
