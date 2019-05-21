@@ -127,7 +127,7 @@ func (this *Error) log(logger *logrus.Logger, withTrace bool) *Error {
 		"details": this.Details,
 	})
 	if withTrace && this.CauseBy != nil {
-		entry = entry.WithField("causeBy", tracerr.SprintFirst(this.CauseBy, []int{5}, 1, 10))
+		entry = entry.WithField("causeBy", tracerr.SprintFirst(this.CauseBy, []int{5}, 2, 10))
 	}
 	if this.Level == LevelDebug {
 		entry.Debugln(this.Message)
