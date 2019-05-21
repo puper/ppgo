@@ -106,7 +106,7 @@ func (this *Error) SetCauseBy(err error) *Error {
 	if terr, ok := err.(tracerr.Error); ok {
 		this.CauseBy = terr
 	} else {
-		this.CauseBy = tracerr.Wrap(err)
+		this.CauseBy = tracerr.WrapSkip(err, 2)
 	}
 	return this
 }
@@ -120,14 +120,14 @@ func (this *Error) LogWithTrace(logger *logrus.Logger) *Error {
 }
 
 func (this *Error) log(logger *logrus.Logger, withTrace bool) *Error {
-	entry := logrus.New().WithFields(logrus.Fields{
+	entry := logger.WithFields(logrus.Fields{
 		"type":    this.Type,
 		"params":  this.Params,
 		"code":    this.Code,
 		"details": this.Details,
 	})
-	if this.CauseBy != nil {
-		entry = entry.WithField("causeBy", tracerr.SprintSource(this.CauseBy))
+	if withTrace && this.CauseBy != nil {
+		entry = entry.WithField("causeBy", tracerr.SprintFirst(this.CauseBy, []int{5}, 1, 10))
 	}
 	if this.Level == LevelDebug {
 		entry.Debugln(this.Message)
