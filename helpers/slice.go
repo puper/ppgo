@@ -45,3 +45,20 @@ func SliceUnique(s interface{}, uf func(i int) interface{}) {
 	}
 	rv.SetLen(j)
 }
+
+func SliceReverse(s interface{}) {
+	rv := reflect.ValueOf(s)
+	if rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Slice {
+		panic("arg is not a slice")
+	}
+	l := rv.Len()
+	max := l / 2
+	for i := 0; i < max; i++ {
+		tmp := rv.Index(i).Interface()
+		rv.Index(i).Set(rv.Index(l - i - 1))
+		rv.Index(l - i - 1).Set(reflect.ValueOf(tmp))
+	}
+}
