@@ -7,6 +7,12 @@ import (
 	"github.com/puper/tracerr"
 )
 
+var defaultLogger = logrus.New()
+
+var DefaultLoggerFunc = func() *logrus.Logger {
+	return defaultLogger
+}
+
 // error type
 const (
 	TypeUnset            = "unset"
@@ -43,11 +49,14 @@ type Error struct {
 	CauseBy tracerr.Error
 }
 
-func Trace(err error) *Error {
+func Trace(err error, skip ...int) *Error {
 	if terr, ok := err.(*Error); ok {
 		return terr
 	}
-	return New().SetCauseBy(err)
+	if len(skip) > 0 {
+		return New().SetCauseBy(err, skip[0])
+	}
+	return New().SetCauseBy(err, 2)
 }
 
 func New() *Error {
@@ -102,21 +111,27 @@ func (this *Error) SetDetails(details ...interface{}) *Error {
 	return this
 }
 
-func (this *Error) SetCauseBy(err error) *Error {
+func (this *Error) SetCauseBy(err error, skip int) *Error {
 	if terr, ok := err.(tracerr.Error); ok {
 		this.CauseBy = terr
 	} else {
-		this.CauseBy = tracerr.WrapSkip(err, 2)
+		this.CauseBy = tracerr.WrapSkip(err, skip)
 	}
 	return this
 }
 
-func (this *Error) Log(logger *logrus.Logger) *Error {
-	return this.log(logger, false)
+func (this *Error) Log(logger ...*logrus.Logger) *Error {
+	if len(logger) > 0 {
+		return this.log(logger[0], false)
+	}
+	return this.log(DefaultLoggerFunc(), false)
 }
 
-func (this *Error) LogWithTrace(logger *logrus.Logger) *Error {
-	return this.log(logger, true)
+func (this *Error) LogWithTrace(logger ...*logrus.Logger) *Error {
+	if len(logger) > 0 {
+		return this.log(logger[0], true)
+	}
+	return this.log(DefaultLoggerFunc(), true)
 }
 
 func (this *Error) log(logger *logrus.Logger, withTrace bool) *Error {
