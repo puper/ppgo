@@ -32,6 +32,7 @@ func (this *Component) Start(_, instance interface{}) error {
 		iris.WithoutServerError(
 			iris.ErrServerClosed,
 		),
+		iris.WithoutPathCorrection,
 	)
 }
 
