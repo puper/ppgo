@@ -16,6 +16,18 @@ func ParseDatetime(d string) (int64, error) {
 	return t.Unix(), nil
 }
 
+func ParseTime(d string) (int64, error) {
+	t, err := time.ParseInLocation("15:04:05", d, time.Local)
+	if err != nil {
+		return 0, err
+	}
+	dayStart, err := DayStart(t)
+	if err != nil {
+		return 0, err
+	}
+	return t.Unix() - dayStart.Unix(), nil
+}
+
 func ParseDatetimeMinute(d string) (int64, error) {
 	t, err := time.ParseInLocation("2006-01-02 15:04", d, time.Local)
 	if err != nil {
