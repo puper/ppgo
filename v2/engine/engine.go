@@ -16,10 +16,11 @@ type Closer interface {
 	Close() error
 }
 
-func New() *Engine {
+func New(config *Config) *Engine {
 	return &Engine{
 		builders:  map[string]Builder{},
 		instances: map[string]interface{}{},
+		config:    config,
 		graph:     newGraph(),
 	}
 }
@@ -30,10 +31,6 @@ type Engine struct {
 	instances map[string]interface{}
 	config    *Config
 	graph     *graph
-}
-
-func (this *Engine) SetConfig(config *viper.Viper) {
-	this.config = config
 }
 
 func (this *Engine) Register(name string, builder Builder, dependencies ...string) {
