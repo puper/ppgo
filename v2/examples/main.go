@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/kataras/iris"
+	"github.com/kataras/iris/v12"
 
 	"github.com/puper/ppgo/v2/components/db"
 	"github.com/puper/ppgo/v2/components/irisapp"

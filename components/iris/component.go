@@ -3,7 +3,7 @@ package iris
 import (
 	"context"
 
-	"github.com/kataras/iris"
+	"github.com/kataras/iris/v12"
 
 	"github.com/puper/ppgo/engine"
 	"github.com/puper/ppgo/helpers"
