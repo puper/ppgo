@@ -1,7 +1,6 @@
 package app
 
 import (
-	"github.com/Sirupsen/logrus"
 	redigo "github.com/garyburd/redigo/redis"
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
@@ -10,6 +9,7 @@ import (
 	"github.com/puper/ppgo/components/log"
 	"github.com/puper/ppgo/components/redis"
 	"github.com/puper/ppgo/engine"
+	"github.com/sirupsen/logrus"
 )
 
 var (
