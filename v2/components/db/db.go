@@ -23,6 +23,7 @@ type (
 		ConnMaxLifeTime int // in second
 		MaxIdleConns    int
 		MaxOpenConns    int
+		Callback        func(*gorm.DB)
 	}
 	Model interface {
 		ConnectionName() string
@@ -40,7 +41,9 @@ func New(cfg *Config) (*DB, error) {
 		w.master.DB().SetConnMaxLifetime(time.Duration(config.ConnMaxLifeTime) * time.Second)
 		w.master.DB().SetMaxIdleConns(config.MaxIdleConns)
 		w.master.DB().SetMaxOpenConns(config.MaxOpenConns)
-
+		if config.Callback != nil {
+			config.Callback(w.master)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -52,6 +55,9 @@ func New(cfg *Config) (*DB, error) {
 			slave.DB().SetConnMaxLifetime(time.Duration(config.ConnMaxLifeTime) * time.Second)
 			slave.DB().SetMaxIdleConns(config.MaxIdleConns)
 			slave.DB().SetMaxOpenConns(config.MaxOpenConns)
+			if config.Callback != nil {
+				config.Callback(slave)
+			}
 			w.slave = append(w.slave, slave)
 		}
 		man.wrappers[name] = w

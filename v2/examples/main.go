@@ -20,8 +20,7 @@ func main() {
 	config := viper.New()
 	config.SetConfigFile("/Users/puper/go/src/github.com/puper/ppgo/v2/examples/config.toml")
 	config.ReadInConfig()
-	e := engine.New()
-	e.SetConfig(config)
+	e := engine.New(config)
 	e.Register("log", log.Builder("log"))
 	e.Register("db", db.Builder("db"), "log")
 	e.Register("web", func(e *engine.Engine) (interface{}, error) {
@@ -30,7 +29,7 @@ func main() {
 			return nil, err
 		}
 		app := &irisapp.Application{
-			iris.New(),
+			Application: iris.New(),
 		}
 		go app.Run(iris.Listener(l))
 		return app, nil
