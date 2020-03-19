@@ -136,6 +136,7 @@ func (this *Error) LogWithTrace(logger ...*logrus.Logger) *Error {
 
 func (this *Error) log(logger *logrus.Logger, withTrace bool) *Error {
 	entry := logger.WithFields(logrus.Fields{
+		"causeBy": this.CauseBy,
 		"type":    this.Type,
 		"params":  this.Params,
 		"code":    this.Code,
