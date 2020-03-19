@@ -3,8 +3,8 @@ package errors
 import (
 	"fmt"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/puper/tracerr"
+	"github.com/sirupsen/logrus"
 )
 
 var defaultLogger = logrus.New()

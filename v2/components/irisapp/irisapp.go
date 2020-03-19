@@ -3,7 +3,7 @@ package irisapp
 import (
 	"context"
 
-	"github.com/kataras/iris"
+	"github.com/kataras/iris/v12"
 )
 
 type Application struct {
