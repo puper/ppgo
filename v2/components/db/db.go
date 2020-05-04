@@ -23,7 +23,7 @@ type (
 		ConnMaxLifeTime int // in second
 		MaxIdleConns    int
 		MaxOpenConns    int
-		Callback        func(*gorm.DB)
+		Callback        func(*gorm.DB) *gorm.DB
 	}
 	Model interface {
 		ConnectionName() string
@@ -42,7 +42,7 @@ func New(cfg *Config) (*DB, error) {
 		w.master.DB().SetMaxIdleConns(config.MaxIdleConns)
 		w.master.DB().SetMaxOpenConns(config.MaxOpenConns)
 		if config.Callback != nil {
-			config.Callback(w.master)
+			w.master = config.Callback(w.master)
 		}
 		if err != nil {
 			return nil, err
@@ -56,7 +56,7 @@ func New(cfg *Config) (*DB, error) {
 			slave.DB().SetMaxIdleConns(config.MaxIdleConns)
 			slave.DB().SetMaxOpenConns(config.MaxOpenConns)
 			if config.Callback != nil {
-				config.Callback(slave)
+				slave = config.Callback(slave)
 			}
 			w.slave = append(w.slave, slave)
 		}
