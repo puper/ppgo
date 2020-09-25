@@ -22,7 +22,7 @@ func main() {
 	config.ReadInConfig()
 	e := engine.New(config)
 	e.Register("log", log.Builder("log"))
-	e.Register("db", db.Builder("db"), "log")
+	e.Register("db", db.Builder("db", nil), "log")
 	e.Register("web", func(e *engine.Engine) (interface{}, error) {
 		l, err := net.Listen("tcp4", e.GetConfig().GetString("web.addr"))
 		if err != nil {

@@ -1,6 +1,6 @@
 [db.alarmengine]
     driver = "mysql"
-    master = "root:root@tcp(localhost:3306)/alarmengine?charset=utf8mb4&parseTime=True&loc=Local"
+    master = "root:root@tcp(localhost:3306)/test?charset=utf8mb4&parseTime=True&loc=Local"
     slave = []
     connMaxLifeTime = 10
     maxIdleConns = 10
