@@ -3,8 +3,8 @@ package errors
 import (
 	"fmt"
 
+	"github.com/Sirupsen/logrus"
 	"github.com/puper/tracerr"
-	"github.com/sirupsen/logrus"
 )
 
 var defaultLogger = logrus.New()
@@ -142,7 +142,12 @@ func (this *Error) log(logger *logrus.Logger, withTrace bool) *Error {
 		"details": this.Details,
 	})
 	if withTrace && this.CauseBy != nil {
-		entry = entry.WithField("causeBy", tracerr.SprintFirst(this.CauseBy, []int{5}, 2, 10))
+		entry = entry.WithField(
+			"causeBy",
+			tracerr.SprintFirst(this.CauseBy, []int{5}, 2, 10)+"\n"+this.CauseBy.Error(),
+		)
+	} else {
+		entry = entry.WithField("causeBy", this.CauseBy)
 	}
 	if this.Level == LevelDebug {
 		entry.Debugln(this.Message)
