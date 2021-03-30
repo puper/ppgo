@@ -37,23 +37,31 @@ func New(cfg *Config) (*DB, error) {
 	for name, config := range *cfg {
 		w := new(Wrapper)
 		w.master, err = gorm.Open(mysql.Open(config.Master), &gorm.Config{})
-		w.master.DB().SetConnMaxLifetime(time.Duration(config.ConnMaxLifeTime) * time.Second)
-		w.master.DB().SetMaxIdleConns(config.MaxIdleConns)
-		w.master.DB().SetMaxOpenConns(config.MaxOpenConns)
-		if config.Callback != nil {
-			w.master = config.Callback(w.master)
-		}
 		if err != nil {
 			return nil, err
+		}
+		rawDb, err := w.master.DB()
+		if err != nil {
+			return nil, err
+		}
+		rawDb.SetConnMaxLifetime(time.Duration(config.ConnMaxLifeTime) * time.Second)
+		rawDb.SetMaxIdleConns(config.MaxIdleConns)
+		rawDb.SetMaxOpenConns(config.MaxOpenConns)
+		if config.Callback != nil {
+			w.master = config.Callback(w.master)
 		}
 		for _, s := range config.Slave {
 			slave, err := gorm.Open(mysql.Open(s), &gorm.Config{})
 			if err != nil {
 				return nil, err
 			}
-			slave.DB().SetConnMaxLifetime(time.Duration(config.ConnMaxLifeTime) * time.Second)
-			slave.DB().SetMaxIdleConns(config.MaxIdleConns)
-			slave.DB().SetMaxOpenConns(config.MaxOpenConns)
+			rawDb, err := slave.DB()
+			if err != nil {
+				return nil, err
+			}
+			rawDb.SetConnMaxLifetime(time.Duration(config.ConnMaxLifeTime) * time.Second)
+			rawDb.SetMaxIdleConns(config.MaxIdleConns)
+			rawDb.SetMaxOpenConns(config.MaxOpenConns)
 			if config.Callback != nil {
 				slave = config.Callback(slave)
 			}
