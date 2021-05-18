@@ -34,7 +34,7 @@ func New(cfg *Config) (*Log, error) {
 			if err != nil {
 				return nil, err
 			}
-			arf.maxBackups, _ = strconv.Atoi(config["maxBackups"])
+			arf.maxBackups, _ = strconv.Atoi(config["maxbackups"])
 			l.Out = arf
 		}
 		instance.logs[name] = l
