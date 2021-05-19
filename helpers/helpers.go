@@ -1,4 +1,4 @@
-package myhelpers
+package helpers
 
 import (
 	"encoding/json"
