@@ -38,7 +38,7 @@ func Unlock(key string) {
 func RLock(key string) {
 	Default().RLock(key)
 }
-func RUnUnlock(key string) {
+func RUnlock(key string) {
 	Default().RUnlock(key)
 }
 
