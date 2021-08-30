@@ -53,6 +53,11 @@ func (this *BusinessError) StatusCode(statusCode int) *BusinessError {
 	return this
 }
 
+func (this *BusinessError) ErrAsOutMsg() *BusinessError {
+	this.errConfig.ErrMsg = this.err.Error()
+	return this
+}
+
 func (this *BusinessError) OutMsg(format string, a ...interface{}) *BusinessError {
 	this.errConfig.ErrMsg = fmt.Sprintf(format, a...)
 	return this
