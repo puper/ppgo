@@ -13,6 +13,10 @@ type Iris struct {
 	config      *Config
 }
 
+func (this *Iris) GetConfig() *Config {
+	return this.config
+}
+
 func (this *Iris) GetApplication() *iris.Application {
 	return this.application
 }
