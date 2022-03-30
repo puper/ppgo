@@ -1,4 +1,4 @@
-package log
+package zaplog
 
 import (
 	"github.com/puper/ppgo/helpers"
