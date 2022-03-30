@@ -12,6 +12,13 @@ type Log struct {
 	logs map[string]*zap.SugaredLogger
 }
 
+func (this *Log) Close() error {
+	for _, l := range this.logs {
+		l.Sync()
+	}
+	return nil
+}
+
 type Config map[string]*LogConfig
 
 func New(cfg Config) (*Log, error) {
