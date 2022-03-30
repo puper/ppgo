@@ -10,7 +10,15 @@ import (
 
 type (
 	// DependencyHandler is the native function declaration which implementors should return a value match to an input.
-	DependencyHandler func(ctx *context.Context, input *Input) (reflect.Value, error)
+	DependencyHandler = func(ctx *context.Context, input *Input) (reflect.Value, error)
+
+	// DependencyMatchFunc type alias describes dependency
+	// match function with an input (field or parameter).
+	//
+	// See "DependencyMatcher" too, which can be used on a Container to
+	// change the way dependencies are matched to inputs for all dependencies.
+	DependencyMatchFunc = func(in reflect.Type) bool
+
 	// Dependency describes the design-time dependency to be injected at serve time.
 	// Contains its source location, the dependency handler (provider) itself and information
 	// such as static for static struct values or explicit to bind a value to its exact DestType and not if just assignable to it (interfaces).
@@ -21,11 +29,14 @@ type (
 		// It's the exact type of return to bind, if declared to return <T>, otherwise nil.
 		DestType reflect.Type
 		Static   bool
-		// If true then input and dependnecy DestType should be indedical,
+		// If true then input and dependency DestType should be indedical,
 		// not just assiginable to each other.
 		// Example of use case: depenendency like time.Time that we want to be bindable
 		// only to time.Time inputs and not to a service with a `String() string` method that time.Time struct implements too.
 		Explicit bool
+
+		// Match holds the matcher. Defaults to the Container's one.
+		Match DependencyMatchFunc
 	}
 )
 
@@ -50,7 +61,11 @@ func (d *Dependency) String() string {
 // NewDependency converts a function or a function which accepts other dependencies or static struct value to a *Dependency.
 //
 // See `Container.Handler` for more.
-func NewDependency(dependency interface{}, funcDependencies ...*Dependency) *Dependency {
+func NewDependency(dependency interface{}, funcDependencies ...*Dependency) *Dependency { // used only on tests.
+	return newDependency(dependency, false, nil, funcDependencies...)
+}
+
+func newDependency(dependency interface{}, disablePayloadAutoBinding bool, matchDependency DependencyMatcher, funcDependencies ...*Dependency) *Dependency {
 	if dependency == nil {
 		panic(fmt.Sprintf("bad value: nil: %T", dependency))
 	}
@@ -65,12 +80,17 @@ func NewDependency(dependency interface{}, funcDependencies ...*Dependency) *Dep
 		panic(fmt.Sprintf("bad value: %#+v", dependency))
 	}
 
+	if matchDependency == nil {
+		matchDependency = DefaultDependencyMatcher
+	}
+
 	dest := &Dependency{
 		Source:        newSource(v),
 		OriginalValue: dependency,
 	}
+	dest.Match = ToDependencyMatchFunc(dest, matchDependency)
 
-	if !resolveDependency(v, dest, funcDependencies...) {
+	if !resolveDependency(v, disablePayloadAutoBinding, dest, funcDependencies...) {
 		panic(fmt.Sprintf("bad value: could not resolve a dependency from: %#+v", dependency))
 	}
 
@@ -80,11 +100,11 @@ func NewDependency(dependency interface{}, funcDependencies ...*Dependency) *Dep
 // DependencyResolver func(v reflect.Value, dest *Dependency) bool
 // Resolver     DependencyResolver
 
-func resolveDependency(v reflect.Value, dest *Dependency, funcDependencies ...*Dependency) bool {
+func resolveDependency(v reflect.Value, disablePayloadAutoBinding bool, dest *Dependency, funcDependencies ...*Dependency) bool {
 	return fromDependencyHandler(v, dest) ||
 		fromStructValue(v, dest) ||
 		fromFunc(v, dest) ||
-		len(funcDependencies) > 0 && fromDependentFunc(v, dest, funcDependencies)
+		len(funcDependencies) > 0 && fromDependentFunc(v, disablePayloadAutoBinding, dest, funcDependencies)
 }
 
 func fromDependencyHandler(_ reflect.Value, dest *Dependency) bool {
@@ -197,7 +217,7 @@ func handlerFromFunc(v reflect.Value, typ reflect.Type) DependencyHandler {
 	}
 }
 
-func fromDependentFunc(v reflect.Value, dest *Dependency, funcDependencies []*Dependency) bool {
+func fromDependentFunc(v reflect.Value, disablePayloadAutoBinding bool, dest *Dependency, funcDependencies []*Dependency) bool {
 	// * func(<D>...) returns <T>
 	// * func(<D>...) returns error
 	// * func(<D>...) returns <T>, error
@@ -207,7 +227,7 @@ func fromDependentFunc(v reflect.Value, dest *Dependency, funcDependencies []*De
 		return false
 	}
 
-	bindings := getBindingsForFunc(v, funcDependencies, -1 /* parameter bindings are disabled for depent dependencies */)
+	bindings := getBindingsForFunc(v, funcDependencies, disablePayloadAutoBinding, -1 /* parameter bindings are disabled for depent dependencies */)
 
 	numIn := typ.NumIn()
 	numOut := typ.NumOut()
@@ -215,11 +235,11 @@ func fromDependentFunc(v reflect.Value, dest *Dependency, funcDependencies []*De
 	// d1 = Logger
 	// d2 = func(Logger) S1
 	// d2 should be static: it accepts dependencies that are static
-	// (note: we don't check the output argument(s) of this dependnecy).
+	// (note: we don't check the output argument(s) of this dependency).
 	if numIn == len(bindings) {
 		static := true
 		for _, b := range bindings {
-			if !b.Dependency.Static && matchDependency(b.Dependency, typ.In(b.Input.Index)) {
+			if !b.Dependency.Static && b.Dependency.Match(typ.In(b.Input.Index)) {
 				static = false
 				break
 			}

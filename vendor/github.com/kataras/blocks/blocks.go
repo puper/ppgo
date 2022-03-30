@@ -456,6 +456,10 @@ func (v *Blocks) ExecuteTemplate(w io.Writer, tmplName, layoutName string, data 
 		}
 	}
 
+	if layoutName == "" {
+		layoutName = v.defaultLayoutName
+	}
+
 	return v.executeTemplate(w, tmplName, layoutName, data)
 }
 

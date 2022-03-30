@@ -25,7 +25,6 @@ var (
 	openBracketBytes           = []byte("[")
 	closeBracketBytes          = []byte("]")
 	openParenBracketBytes      = []byte("({")
-	closeBracketParenBytes     = []byte("})")
 	closeParenOpenBracketBytes = []byte("){")
 	notBytes                   = []byte("!")
 	questionBytes              = []byte("?")
@@ -72,8 +71,6 @@ var (
 	openNewBytes               = []byte("(new")
 	newTargetBytes             = []byte("new.target")
 	importMetaBytes            = []byte("import.meta")
-	varBytes                   = []byte("var")
-	varSpaceBytes              = []byte("var ")
 	nanBytes                   = []byte("NaN")
 	undefinedBytes             = []byte("undefined")
 	infinityBytes              = []byte("Infinity")
@@ -85,8 +82,8 @@ var (
 	groupedNotZeroBytes        = []byte("(!0)")
 	notOneBytes                = []byte("!1")
 	groupedNotOneBytes         = []byte("(!1)")
-	useStrictBytes             = []byte(`"use strict"`)
 	debuggerBytes              = []byte("debugger")
+	regExpScriptBytes          = []byte("/script>")
 )
 
 // precedence maps for the precedence inside the operation
@@ -299,12 +296,25 @@ func condExpr(cond, x, y js.IExpr) js.IExpr {
 	}
 }
 
+func commaExpr(x, y js.IExpr) js.IExpr {
+	comma, ok := x.(*js.CommaExpr)
+	if !ok {
+		comma = &js.CommaExpr{List: []js.IExpr{x}}
+	}
+	if comma2, ok := y.(*js.CommaExpr); ok {
+		comma.List = append(comma.List, comma2.List...)
+	} else {
+		comma.List = append(comma.List, y)
+	}
+	return comma
+}
+
 func (m *jsMinifier) isEmptyStmt(stmt js.IStmt) bool {
 	if stmt == nil {
 		return true
 	} else if _, ok := stmt.(*js.EmptyStmt); ok {
 		return true
-	} else if decl, ok := stmt.(*js.VarDecl); ok && m.varsHoisted != nil && decl != m.varsHoisted {
+	} else if decl, ok := stmt.(*js.VarDecl); ok && decl.TokenType == js.ErrorToken {
 		for _, item := range decl.List {
 			if item.Default != nil {
 				return false
@@ -326,11 +336,11 @@ func finalExpr(expr js.IExpr) js.IExpr {
 	if group, ok := expr.(*js.GroupExpr); ok {
 		expr = group.X
 	}
-	if binary, ok := expr.(*js.BinaryExpr); ok && binary.Op == js.CommaToken {
-		expr = binary.Y
+	if comma, ok := expr.(*js.CommaExpr); ok {
+		expr = comma.List[len(comma.List)-1]
 	}
 	if binary, ok := expr.(*js.BinaryExpr); ok && binary.Op == js.EqToken {
-		expr = binary.X
+		expr = binary.X // return first
 	}
 	return expr
 }
@@ -526,11 +536,11 @@ func endsInIf(istmt js.IStmt) bool {
 	case *js.WhileStmt:
 		return endsInIf(stmt.Body)
 	case *js.ForStmt:
-		return endsInIf(&stmt.Body)
+		return endsInIf(stmt.Body)
 	case *js.ForInStmt:
-		return endsInIf(&stmt.Body)
+		return endsInIf(stmt.Body)
 	case *js.ForOfStmt:
-		return endsInIf(&stmt.Body)
+		return endsInIf(stmt.Body)
 	}
 	return false
 }
@@ -554,11 +564,9 @@ func minifyString(b []byte) []byte {
 			doubleQuotes++
 		}
 	}
-	quote := b[0]
+	quote := byte('"')
 	if singleQuotes < doubleQuotes {
 		quote = byte('\'')
-	} else if doubleQuotes < singleQuotes {
-		quote = byte('"')
 	}
 	b[0] = quote
 	b[len(b)-1] = quote
@@ -606,12 +614,12 @@ func minifyString(b []byte) []byte {
 				}
 			} else if '0' <= c && c <= '7' {
 				// octal escapes (legacy), \0 already handled
-				num := byte(c - '0')
+				num := c - '0'
 				if i+2 < len(b)-1 && '0' <= b[i+2] && b[i+2] <= '7' {
-					num = num*8 + byte(b[i+2]-'0')
+					num = num*8 + b[i+2] - '0'
 					n++
 					if num < 32 && i+3 < len(b)-1 && '0' <= b[i+3] && b[i+3] <= '7' {
-						num = num*8 + byte(b[i+3]-'0')
+						num = num*8 + b[i+3] - '0'
 						n++
 					}
 				}
@@ -679,6 +687,138 @@ func minifyString(b []byte) []byte {
 	if start != 0 {
 		j += copy(b[j:], b[start:])
 		return b[:j]
+	}
+	return b
+}
+
+var regexpEscapeTable = [256]bool{
+	// ASCII
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+
+	false, false, false, false, true, false, false, false, // $
+	true, true, true, true, false, false, true, true, // (, ), *, +, ., /
+	true, true, true, true, true, true, true, true, // 0, 1, 2, 3, 4, 5, 6, 7
+	true, true, false, false, false, false, false, true, // 8, 9, ?
+
+	false, false, true, false, true, false, false, false, // B, D
+	false, false, false, false, false, false, false, false,
+	true, false, false, true, false, false, false, true, // P, S, W
+	false, false, false, true, true, true, true, false, // [, \, ], ^
+
+	false, false, true, true, true, false, true, false, // b, c, d, f
+	false, false, false, true, false, false, true, false, // k, n
+	true, false, true, true, true, true, true, true, // p, r, s, t, u, v, w
+	true, false, false, true, true, true, false, false, // x, {, |, }
+
+	// non-ASCII
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+}
+
+var regexpClassEscapeTable = [256]bool{
+	// ASCII
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	true, true, true, true, true, true, true, true, // 0, 1, 2, 3, 4, 5, 6, 7
+	true, true, false, false, false, false, false, false, // 8, 9
+
+	false, false, false, false, true, false, false, false, // D
+	false, false, false, false, false, false, false, false,
+	true, false, false, true, false, false, false, true, // P, S, W
+	false, false, false, false, true, true, false, false, // \, ]
+
+	false, false, true, true, true, false, true, false, // b, c, d, f
+	false, false, false, false, false, false, true, false, // n
+	true, false, true, true, true, true, true, true, // p, r, s, t, u, v, w
+	true, false, false, false, false, false, false, false, // x
+
+	// non-ASCII
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+	false, false, false, false, false, false, false, false,
+}
+
+func minifyRegExp(b []byte) []byte {
+	inClass := false
+	afterDash := 0
+	iClass := 0
+	for i := 1; i < len(b)-1; i++ {
+		if inClass {
+			afterDash++
+		}
+		if b[i] == '\\' {
+			c := b[i+1]
+			escape := true
+			if inClass {
+				escape = regexpClassEscapeTable[c] || c == '-' && 2 < afterDash && i+2 < len(b) && b[i+2] != ']' || c == '^' && i == iClass+1
+			} else {
+				escape = regexpEscapeTable[c]
+			}
+			if !escape {
+				b = append(b[:i], b[i+1:]...)
+				if inClass && 2 < afterDash && c == '-' {
+					afterDash = 0
+				} else if inClass && c == '^' {
+					afterDash = 1
+				}
+			} else {
+				i++
+			}
+		} else if b[i] == '[' {
+			if b[i+1] == '^' {
+				i++
+			}
+			afterDash = 1
+			inClass = true
+			iClass = i
+		} else if inClass && b[i] == ']' {
+			inClass = false
+		} else if b[i] == '/' {
+			break
+		} else if inClass && 2 < afterDash && b[i] == '-' {
+			afterDash = 0
+		}
 	}
 	return b
 }

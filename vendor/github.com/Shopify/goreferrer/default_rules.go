@@ -3976,6 +3976,11 @@ const defaultRules = `
                 "skyrock.com"
             ]
         },
+        "Snapchat": {
+            "domains": [
+                "snapchat.com"
+            ]
+        },
         "Sonico.com": {
             "domains": [
                 "sonico.com"
@@ -4013,7 +4018,8 @@ const defaultRules = `
         },
         "TikTok": {
             "domains": [
-                "tiktok.com"
+                "tiktok.com",
+                "tiktokcdn.com"
             ]
         },
         "Tuenti": {

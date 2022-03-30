@@ -20,6 +20,7 @@ import (
 	"github.com/kataras/iris/v12/core/router"
 	"github.com/kataras/iris/v12/i18n"
 	"github.com/kataras/iris/v12/middleware/accesslog"
+	"github.com/kataras/iris/v12/middleware/cors"
 	"github.com/kataras/iris/v12/middleware/recover"
 	"github.com/kataras/iris/v12/middleware/requestid"
 	"github.com/kataras/iris/v12/view"
@@ -37,7 +38,7 @@ import (
 )
 
 // Version is the current version of the Iris Web Framework.
-const Version = "12.2.0-alpha"
+const Version = "12.2.0-alpha9"
 
 // Byte unit helpers.
 const (
@@ -134,7 +135,7 @@ func New() *Application {
 // Localization enabled on "./locales" directory
 // and HTML templates on "./views" or "./templates" directory.
 // It runs with the AccessLog on "./access.log",
-// Recovery and Request ID middleware already attached.
+// CORS (allow all), Recovery and Request ID middleware already attached.
 func Default() *Application {
 	app := New()
 	// Set default log level.
@@ -165,6 +166,13 @@ func Default() *Application {
 	// Register the recovery, after accesslog and recover,
 	// before end-developer's middleware.
 	app.UseRouter(recover.New())
+
+	// Register CORS (allow any origin to pass through) middleware.
+	app.UseRouter(cors.New().
+		ExtractOriginFunc(cors.DefaultOriginExtractor).
+		ReferrerPolicy(cors.NoReferrerWhenDowngrade).
+		AllowOriginFunc(cors.AllowAnyOrigin).
+		Handler())
 
 	app.defaultMode = true
 
@@ -410,11 +418,7 @@ func (app *Application) View(writer io.Writer, filename string, layout string, b
 		return err
 	}
 
-	err := app.view.ExecuteWriter(writer, filename, layout, bindingData)
-	if err != nil {
-		app.logger.Error(err)
-	}
-	return err
+	return app.view.ExecuteWriter(writer, filename, layout, bindingData)
 }
 
 // ConfigureHost accepts one or more `host#Configuration`, these configurators functions
@@ -644,6 +648,29 @@ func (app *Application) Build() error {
 			return err
 		}
 		app.HTTPErrorHandler = routerHandler
+
+		if app.config.Timeout > 0 {
+			app.Router.SetTimeoutHandler(app.config.Timeout, app.config.TimeoutMessage)
+
+			app.ConfigureHost(func(su *Supervisor) {
+				if su.Server.ReadHeaderTimeout == 0 {
+					su.Server.ReadHeaderTimeout = app.config.Timeout + 5*time.Second
+				}
+
+				if su.Server.ReadTimeout == 0 {
+					su.Server.ReadTimeout = app.config.Timeout + 10*time.Second
+				}
+
+				if su.Server.WriteTimeout == 0 {
+					su.Server.WriteTimeout = app.config.Timeout + 15*time.Second
+				}
+
+				if su.Server.IdleTimeout == 0 {
+					su.Server.IdleTimeout = app.config.Timeout + 25*time.Second
+				}
+			})
+		}
+
 		// re-build of the router from outside can be done with
 		// app.RefreshRouter()
 	}
@@ -897,6 +924,7 @@ func (app *Application) Run(serve Runner, withOrWithout ...Configurator) error {
 
 	app.ConfigureHost(func(host *Supervisor) {
 		host.SocketSharding = app.config.SocketSharding
+		host.KeepAlive = app.config.KeepAlive
 	})
 
 	app.tryStartTunneling()

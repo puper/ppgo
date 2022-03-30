@@ -83,10 +83,10 @@ func (t Token) String() string {
 }
 
 // Equal returns true if both tokens are equal.
-func (a Token) Equal(b Token) bool {
-	if a.TokenType == b.TokenType && bytes.Equal(a.Data, b.Data) && len(a.Args) == len(b.Args) {
-		for i := 0; i < len(a.Args); i++ {
-			if a.Args[i].TokenType != b.Args[i].TokenType || !bytes.Equal(a.Args[i].Data, b.Args[i].Data) {
+func (t Token) Equal(t2 Token) bool {
+	if t.TokenType == t2.TokenType && bytes.Equal(t.Data, t2.Data) && len(t.Args) == len(t2.Args) {
+		for i := 0; i < len(t.Args); i++ {
+			if t.Args[i].TokenType != t2.Args[i].TokenType || !bytes.Equal(t.Args[i].Data, t2.Args[i].Data) {
 				return false
 			}
 		}
@@ -189,7 +189,7 @@ func (c *cssMinifier) minifyGrammar() {
 		case css.AtRuleGrammar:
 			c.w.Write(data)
 			values := c.p.Values()
-			if ToHash(data[1:]) == Import && len(values) == 2 && values[1].TokenType == css.URLToken {
+			if ToHash(data[1:]) == Import && len(values) == 2 && values[1].TokenType == css.URLToken && 4 < len(values[1].Data) && values[1].Data[len(values[1].Data)-1] == ')' {
 				url := values[1].Data
 				if url[4] != '"' && url[4] != '\'' {
 					a := 4
@@ -197,10 +197,14 @@ func (c *cssMinifier) minifyGrammar() {
 						a++
 					}
 					b := len(url) - 2
-					for parse.IsWhitespace(url[b]) || parse.IsNewline(url[b]) {
+					for a < b && (parse.IsWhitespace(url[b]) || parse.IsNewline(url[b])) {
 						b--
 					}
-					url = url[a-1 : b+2]
+					if a == b {
+						url = url[:2]
+					} else {
+						url = url[a-1 : b+2]
+					}
 					url[0] = '"'
 					url[len(url)-1] = '"'
 				} else {
@@ -398,7 +402,7 @@ func (c *cssMinifier) minifyDeclaration(property []byte, components []css.Token)
 		return
 	}
 
-	values = c.minifyTokens(prop, values)
+	values = c.minifyTokens(prop, 0, values)
 	if len(values) > 0 {
 		values = c.minifyProperty(prop, values)
 	}
@@ -440,7 +444,7 @@ func (c *cssMinifier) writeDeclaration(values []Token, important bool) {
 	}
 }
 
-func (c *cssMinifier) minifyTokens(prop Hash, values []Token) []Token {
+func (c *cssMinifier) minifyTokens(prop Hash, fun Hash, values []Token) []Token {
 	for i, value := range values {
 		tt := value.TokenType
 		switch tt {
@@ -464,7 +468,7 @@ func (c *cssMinifier) minifyTokens(prop Hash, values []Token) []Token {
 		case css.DimensionToken:
 			var dim []byte
 			values[i], dim = c.minifyDimension(values[i])
-			if 1 < len(values[i].Data) && values[i].Data[0] == '0' && optionalZeroDimension[string(dim)] && prop != Flex && prop != Function {
+			if 1 < len(values[i].Data) && values[i].Data[0] == '0' && optionalZeroDimension[string(dim)] && prop != Flex && fun == 0 {
 				// cut dimension for zero value, TODO: don't hardcode check for Flex and remove the dimension in minifyDimension
 				values[i].Data = values[i].Data[:1]
 			}
@@ -489,7 +493,7 @@ func (c *cssMinifier) minifyTokens(prop Hash, values []Token) []Token {
 				}
 			}
 		case css.FunctionToken:
-			values[i].Args = c.minifyTokens(Function, values[i].Args)
+			values[i].Args = c.minifyTokens(prop, values[i].Fun, values[i].Args)
 
 			fun := values[i].Fun
 			args := values[i].Args
@@ -885,7 +889,7 @@ func (c *cssMinifier) minifyProperty(prop Hash, values []Token) []Token {
 			}
 
 			if end-start == 0 {
-				values = append(values[:start], append([]Token{{css.NumberToken, zeroBytes, nil, 0, 0}, Token{css.NumberToken, zeroBytes, nil, 0, 0}}, values[end:]...)...)
+				values = append(values[:start], append([]Token{{css.NumberToken, zeroBytes, nil, 0, 0}, {css.NumberToken, zeroBytes, nil, 0, 0}}, values[end:]...)...)
 				end += 2
 			}
 			start = end + 1
@@ -1096,9 +1100,11 @@ func (c *cssMinifier) minifyProperty(prop Hash, values []Token) []Token {
 		values[0] = minifyColor(values[0])
 	case Background_Color:
 		values[0] = minifyColor(values[0])
-		if values[0].Ident == Transparent {
-			values[0].Data = initialBytes
-			values[0].Ident = Initial
+		if !c.o.KeepCSS2 {
+			if values[0].Ident == Transparent {
+				values[0].Data = initialBytes
+				values[0].Ident = Initial
+			}
 		}
 	case Border_Color:
 		sameValues := true
@@ -1173,26 +1179,24 @@ func (c *cssMinifier) minifyProperty(prop Hash, values []Token) []Token {
 			}
 		} else if len(values) == 3 && values[0].TokenType == css.NumberToken && values[1].TokenType == css.NumberToken {
 			if len(values[0].Data) == 1 && len(values[1].Data) == 1 {
-				grow := values[0].Data[0] == '1'
-				shrink := values[1].Data[0] == '1'
 				if values[2].Ident == Auto {
-					if !grow && shrink {
+					if values[0].Data[0] == '0' && values[1].Data[0] == '1' {
 						values = values[:1]
 						values[0].TokenType = css.IdentToken
 						values[0].Data = initialBytes
 						values[0].Ident = Initial
-					} else if grow && shrink {
+					} else if values[0].Data[0] == '1' && values[1].Data[0] == '1' {
 						values = values[:1]
 						values[0].TokenType = css.IdentToken
 						values[0].Data = autoBytes
 						values[0].Ident = Auto
-					} else if !grow && !shrink {
+					} else if values[0].Data[0] == '0' && values[1].Data[0] == '0' {
 						values = values[:1]
 						values[0].TokenType = css.IdentToken
 						values[0].Data = noneBytes
 						values[0].Ident = None
 					}
-				} else if shrink && values[2].IsZero() {
+				} else if values[1].Data[0] == '1' && values[2].IsZero() {
 					values = values[:1] // remove <flex-shrink> and <flex-basis> if they are 1 and 0 respectively
 				} else if values[2].IsZero() {
 					values = values[:2] // remove auto to write 2-value syntax of <flex-grow> <flex-shrink>
@@ -1532,5 +1536,5 @@ func (c *cssMinifier) minifyDimension(value Token) (Token, []byte) {
 	//	}
 	//	value.Data = append(num, dim...)
 	//}
-	return value, dim
+	//return value, dim
 }

@@ -38,6 +38,24 @@ type Container struct {
 	Sorter Sorter
 	// The dependencies entries.
 	Dependencies []*Dependency
+
+	// MarkExportedFieldsAsRequired reports whether all struct's fields
+	// MUST be binded to a dependency from the `Dependencies` list field.
+	// In-short, if it is set to true and if at least one exported field
+	// of a struct is not binded to a dependency then
+	// the entire application will exit with a panic message before server startup.
+	MarkExportedFieldsAsRequired bool
+	// DisablePayloadAutoBinding reports whether
+	// a function's parameter or struct's field of struct type
+	// should not be binded automatically to the request body (e.g. JSON)
+	// if a dependency for that type is missing.
+	// By default the binder will bind structs to request body,
+	// set to true to disable that kind of behavior.
+	DisablePayloadAutoBinding bool
+
+	// DependencyMatcher holds the function that compares equality between
+	// a dependency with an input. Defaults to DefaultMatchDependencyFunc.
+	DependencyMatcher DependencyMatcher
 	// GetErrorHandler should return a valid `ErrorHandler` to handle bindings AND handler dispatch errors.
 	// Defaults to a functon which returns the `DefaultErrorHandler`.
 	GetErrorHandler func(*context.Context) ErrorHandler // cannot be nil.
@@ -124,13 +142,13 @@ func (c *Container) fillReport(fullName string, bindings []*binding) {
 // Contains the iris context, standard context, iris sessions and time dependencies.
 var BuiltinDependencies = []*Dependency{
 	// iris context dependency.
-	NewDependency(func(ctx *context.Context) *context.Context { return ctx }).Explicitly(),
+	newDependency(func(ctx *context.Context) *context.Context { return ctx }, true, nil).Explicitly(),
 	// standard context dependency.
-	NewDependency(func(ctx *context.Context) stdContext.Context {
+	newDependency(func(ctx *context.Context) stdContext.Context {
 		return ctx.Request().Context()
-	}).Explicitly(),
+	}, true, nil).Explicitly(),
 	// iris session dependency.
-	NewDependency(func(ctx *context.Context) *sessions.Session {
+	newDependency(func(ctx *context.Context) *sessions.Session {
 		session := sessions.Get(ctx)
 		if session == nil {
 			ctx.Application().Logger().Debugf("binding: session is nil\nMaybe inside HandleHTTPError? Register it with app.UseRouter(sess.Handler()) to fix it")
@@ -141,52 +159,52 @@ var BuiltinDependencies = []*Dependency{
 		}
 
 		return session
-	}).Explicitly(),
+	}, true, nil).Explicitly(),
 	// application's logger.
-	NewDependency(func(ctx *context.Context) *golog.Logger {
+	newDependency(func(ctx *context.Context) *golog.Logger {
 		return ctx.Application().Logger()
-	}).Explicitly(),
+	}, true, nil).Explicitly(),
 	// time.Time to time.Now dependency.
-	NewDependency(func(ctx *context.Context) time.Time {
+	newDependency(func(ctx *context.Context) time.Time {
 		return time.Now()
-	}).Explicitly(),
+	}, true, nil).Explicitly(),
 	// standard http Request dependency.
-	NewDependency(func(ctx *context.Context) *http.Request {
+	newDependency(func(ctx *context.Context) *http.Request {
 		return ctx.Request()
-	}).Explicitly(),
+	}, true, nil).Explicitly(),
 	// standard http ResponseWriter dependency.
-	NewDependency(func(ctx *context.Context) http.ResponseWriter {
+	newDependency(func(ctx *context.Context) http.ResponseWriter {
 		return ctx.ResponseWriter()
-	}).Explicitly(),
+	}, true, nil).Explicitly(),
 	// http headers dependency.
-	NewDependency(func(ctx *context.Context) http.Header {
+	newDependency(func(ctx *context.Context) http.Header {
 		return ctx.Request().Header
-	}).Explicitly(),
+	}, true, nil).Explicitly(),
 	// Client IP.
-	NewDependency(func(ctx *context.Context) net.IP {
+	newDependency(func(ctx *context.Context) net.IP {
 		return net.ParseIP(ctx.RemoteAddr())
-	}).Explicitly(),
+	}, true, nil).Explicitly(),
 	// Status Code (special type for MVC HTTP Error handler to not conflict with path parameters)
-	NewDependency(func(ctx *context.Context) Code {
+	newDependency(func(ctx *context.Context) Code {
 		return Code(ctx.GetStatusCode())
-	}).Explicitly(),
+	}, true, nil).Explicitly(),
 	// Context Error. May be nil
-	NewDependency(func(ctx *context.Context) Err {
+	newDependency(func(ctx *context.Context) Err {
 		err := ctx.GetErr()
 		if err == nil {
 			return nil
 		}
 		return err
-	}).Explicitly(),
+	}, true, nil).Explicitly(),
 	// Context User, e.g. from basic authentication.
-	NewDependency(func(ctx *context.Context) context.User {
+	newDependency(func(ctx *context.Context) context.User {
 		u := ctx.User()
 		if u == nil {
 			return nil
 		}
 
 		return u
-	}),
+	}, true, nil),
 	// payload and param bindings are dynamically allocated and declared at the end of the `binding` source file.
 }
 
@@ -203,6 +221,7 @@ func New(dependencies ...interface{}) *Container {
 		GetErrorHandler: func(*context.Context) ErrorHandler {
 			return DefaultErrorHandler
 		},
+		DependencyMatcher: DefaultDependencyMatcher,
 	}
 
 	for _, dependency := range dependencies {
@@ -225,9 +244,12 @@ func (c *Container) Clone() *Container {
 	cloned.Logger = c.Logger
 	cloned.GetErrorHandler = c.GetErrorHandler
 	cloned.Sorter = c.Sorter
+	cloned.DependencyMatcher = c.DependencyMatcher
 	clonedDeps := make([]*Dependency, len(c.Dependencies))
 	copy(clonedDeps, c.Dependencies)
 	cloned.Dependencies = clonedDeps
+	cloned.DisablePayloadAutoBinding = c.DisablePayloadAutoBinding
+	cloned.MarkExportedFieldsAsRequired = c.MarkExportedFieldsAsRequired
 	cloned.resultHandlers = c.resultHandlers
 	// Reports are not cloned.
 	return cloned
@@ -264,7 +286,7 @@ func Register(dependency interface{}) *Dependency {
 // - Register(func(ctx iris.Context) User {...})
 // - Register(func(User) OtherResponse {...})
 func (c *Container) Register(dependency interface{}) *Dependency {
-	d := NewDependency(dependency, c.Dependencies...)
+	d := newDependency(dependency, c.DisablePayloadAutoBinding, c.DependencyMatcher, c.Dependencies...)
 	if d.DestType == nil {
 		// prepend the dynamic dependency so it will be tried at the end
 		// (we don't care about performance here, design-time)
@@ -298,6 +320,26 @@ func Handler(fn interface{}) context.Handler {
 // custom structs, Result(View | Response) and more.
 // It returns a standard `iris/context.Handler` which can be used anywhere in an Iris Application,
 // as middleware or as simple route handler or subdomain's handler.
+//
+//  func(...<T>) iris.Handler
+// - if <T> are all static dependencies then
+// there is no reflection involved at serve-time.
+//
+//  func(pathParameter string, ...<T>)
+// - one or more path parameters (e.g. :uid, :string, :int, :path, :uint64)
+// are automatically binded to the first input Go standard types (string, int, uint64 and e.t.c.)
+//
+//  func(<T>) error
+// - if a function returns an error then this error's text is sent to the client automatically.
+//
+//  func(<T>) <R>
+// - The result of the function is a dependency too.
+// If <R> is a request-scope dependency (dynamic) then
+// this function will be called at every request.
+//
+//  func(<T>) <R>
+// - If <R> is static dependency (e.g. a database or a service) then its result
+// can be used as a static dependency to the next dependencies or to the controller/function itself.
 func (c *Container) Handler(fn interface{}) context.Handler {
 	return c.HandlerWithParams(fn, 0)
 }
@@ -339,7 +381,7 @@ func (c *Container) Inject(toPtr interface{}) error {
 	typ := val.Type()
 
 	for _, d := range c.Dependencies {
-		if d.Static && matchDependency(d, typ) {
+		if d.Static && c.DependencyMatcher(d, typ) {
 			v, err := d.Handle(nil, &Input{Type: typ})
 			if err != nil {
 				if err == ErrSeeOther {

@@ -75,7 +75,7 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 	defer z.Restore()
 
 	l := html.NewLexer(z)
-	tb := NewTokenBuffer(l)
+	tb := NewTokenBuffer(z, l)
 	for {
 		t := *tb.Shift()
 		switch t.TokenType {
@@ -100,7 +100,7 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 					end := len(t.Data) - len("<![endif]-->")
 					w.Write(t.Data[:begin])
 					if err := o.Minify(m, w, buffer.NewReader(t.Data[begin:end]), nil); err != nil {
-						return err
+						return minify.UpdateErrorPosition(err, z, t.Offset)
 					}
 					w.Write(t.Data[end:])
 				} else {
@@ -113,14 +113,14 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 		case html.SvgToken:
 			if err := m.MinifyMimetype(svgMimeBytes, w, buffer.NewReader(t.Data), nil); err != nil {
 				if err != minify.ErrNotExist {
-					return err
+					return minify.UpdateErrorPosition(err, z, t.Offset)
 				}
 				w.Write(t.Data)
 			}
 		case html.MathToken:
 			if err := m.MinifyMimetype(mathMimeBytes, w, buffer.NewReader(t.Data), nil); err != nil {
 				if err != minify.ErrNotExist {
-					return err
+					return minify.UpdateErrorPosition(err, z, t.Offset)
 				}
 				w.Write(t.Data)
 			}
@@ -141,7 +141,7 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 					}
 					if err := m.MinifyMimetype(mimetype, w, buffer.NewReader(t.Data), params); err != nil {
 						if err != minify.ErrNotExist {
-							return err
+							return minify.UpdateErrorPosition(err, z, t.Offset)
 						}
 						w.Write(t.Data)
 					}
@@ -274,10 +274,10 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 					}
 				}
 
-				if o.KeepWhitespace || t.Traits&objectTag != 0 {
-					omitSpace = false
-				} else if t.Traits&nonPhrasingTag != 0 {
+				if t.Traits&nonPhrasingTag != 0 {
 					omitSpace = true // omit spaces after block elements
+				} else if o.KeepWhitespace || t.Traits&objectTag != 0 {
+					omitSpace = false
 				}
 
 				if !omitEndTag {
@@ -324,9 +324,9 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 						if name := attrs[3]; name != nil {
 							name.AttrVal = parse.TrimWhitespace(name.AttrVal)
 							if parse.EqualFold(name.AttrVal, []byte("keywords")) {
-								content.AttrVal = bytes.Replace(content.AttrVal, []byte(", "), []byte(","), -1)
+								content.AttrVal = bytes.ReplaceAll(content.AttrVal, []byte(", "), []byte(","))
 							} else if parse.EqualFold(name.AttrVal, []byte("viewport")) {
-								content.AttrVal = bytes.Replace(content.AttrVal, []byte(" "), []byte(""), -1)
+								content.AttrVal = bytes.ReplaceAll(content.AttrVal, []byte(" "), []byte(""))
 								for i := 0; i < len(content.AttrVal); i++ {
 									if content.AttrVal[i] == '=' && i+2 < len(content.AttrVal) {
 										i++
@@ -431,7 +431,7 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 							if err := m.MinifyMimetype(cssMimeBytes, attrMinifyBuffer, buffer.NewReader(val), inlineParams); err == nil {
 								val = attrMinifyBuffer.Bytes()
 							} else if err != minify.ErrNotExist {
-								return err
+								return minify.UpdateErrorPosition(err, z, attr.Offset)
 							}
 							if len(val) == 0 {
 								continue
@@ -446,7 +446,7 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 							if err := m.MinifyMimetype(jsMimeBytes, attrMinifyBuffer, buffer.NewReader(val), nil); err == nil {
 								val = attrMinifyBuffer.Bytes()
 							} else if err != minify.ErrNotExist {
-								return err
+								return minify.UpdateErrorPosition(err, z, attr.Offset)
 							}
 							if len(val) == 0 {
 								continue
@@ -500,9 +500,9 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 				}
 			}
 
-			// keep space after <i></i> for FontAwesome etc.
-			if t.TokenType == html.StartTagToken && t.Hash == I {
-				if next := tb.Peek(0); next.Hash == I && next.TokenType == html.EndTagToken {
+			// keep space after phrasing tags (<i>, <span>, ...) FontAwesome etc.
+			if t.TokenType == html.StartTagToken && t.Traits&nonPhrasingTag == 0 {
+				if next := tb.Peek(0); next.Hash == t.Hash && next.TokenType == html.EndTagToken {
 					omitSpace = false
 				}
 			}

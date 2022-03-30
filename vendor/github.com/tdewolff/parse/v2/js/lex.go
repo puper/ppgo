@@ -456,7 +456,7 @@ func (l *Lexer) consumeOperatorToken() TokenType {
 		return opEqTokens[c]
 	} else if l.r.Peek(0) == c && (c == '+' || c == '-' || c == '*' || c == '&' || c == '|' || c == '?' || c == '<') {
 		l.r.Move(1)
-		if l.r.Peek(0) == '=' {
+		if l.r.Peek(0) == '=' && c != '+' && c != '-' {
 			l.r.Move(1)
 			return opOpEqTokens[c]
 		}
@@ -508,7 +508,7 @@ func (l *Lexer) consumeIdentifierToken() bool {
 			} else {
 				break
 			}
-		} else {
+		} else if !l.consumeUnicodeEscape() {
 			break
 		}
 	}
@@ -611,7 +611,7 @@ func (l *Lexer) consumeStringToken() bool {
 				}
 			}
 			continue
-		} else if l.consumeLineTerminator() || c == 0 && l.r.Err() != nil {
+		} else if c == '\n' || c == '\r' || c == 0 && l.r.Err() != nil {
 			l.r.Rewind(mark)
 			return false
 		}
