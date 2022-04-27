@@ -1,8 +1,12 @@
 package log
 
 import (
+	"fmt"
+	"io/ioutil"
 	"os"
 	"path"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,10 +21,11 @@ const (
 )
 
 type autoRotateFile struct {
-	path string
-	fh   *os.File
-	rt   RotateType
-	mu   sync.Mutex
+	path       string
+	fh         *os.File
+	rt         RotateType
+	mu         sync.Mutex
+	maxBackups int
 }
 
 func newAutoRotateFile(path string, rt RotateType) (*autoRotateFile, error) {
@@ -111,8 +116,38 @@ func (a *autoRotateFile) rotate() error {
 		if err := a.open(); err != nil {
 			return err
 		}
+		if a.maxBackups > 0 {
+			go CleanLogs(a.path, a.maxBackups)
+		}
 	}
 
 	return nil
 
+}
+
+func CleanLogs(path string, remain int) {
+	baseName := filepath.Base(path)
+	baseDir := filepath.Dir(path)
+	files, err := ioutil.ReadDir(baseDir)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	logFiles := []string{}
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(file.Name(), baseName) && file.Name() != baseName {
+			logFiles = append(logFiles, filepath.Join(baseDir, file.Name()))
+		}
+	}
+	if len(logFiles) > remain {
+		for i := 0; i < (len(logFiles) - remain); i++ {
+			err := os.Remove(logFiles[i])
+			if err != nil {
+				fmt.Printf("os.Remove %v error: %v", logFiles[i], err.Error())
+			}
+		}
+	}
 }
