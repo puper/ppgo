@@ -66,7 +66,8 @@ func New(cfg *Config) (*Log, error) {
 				Compress:   true,
 			}
 			l.Out = w
-			if config["stdout"] != "true" {
+			stdout, _ := strconv.Atoi(config["skipstdout"])
+			if stdout <= 0 {
 				l.AddHook(&writer.Hook{
 					Writer: os.Stdout,
 					LogLevels: []logrus.Level{
