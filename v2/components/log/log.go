@@ -1,9 +1,12 @@
 package log
 
 import (
+	"os"
 	"strconv"
 
 	"github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus/hooks/writer"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 type Log struct {
@@ -30,12 +33,42 @@ func New(cfg *Config) (*Log, error) {
 			l.Formatter = &logrus.TextFormatter{}
 		}
 		if config["out"] != "std" {
-			arf, err := newAutoRotateFile(config["out"], RotateTypeDay)
-			if err != nil {
-				return nil, err
+			maxAge, _ := strconv.Atoi(config["maxage"])
+			if config["maxage"] == "" {
+				maxAge = 30
 			}
-			arf.maxBackups, _ = strconv.Atoi(config["maxbackups"])
-			l.Out = arf
+			maxSize, _ := strconv.Atoi(config["maxsize"])
+			if config["maxsize"] == "" {
+				maxSize = 1000
+			}
+			maxBackups, _ := strconv.Atoi(config["maxbackups"])
+			if config["maxbackups"] == "" {
+				maxBackups = 30
+			}
+			w := &lumberjack.Logger{
+				Filename:   config["out"],
+				MaxSize:    maxSize, // megabytes
+				MaxAge:     maxAge,  // days
+				MaxBackups: maxBackups,
+				LocalTime:  true,
+				Compress:   true,
+			}
+			l.Out = w
+			stdout, _ := strconv.Atoi(config["skipstdout"])
+			if stdout <= 0 {
+				l.AddHook(&writer.Hook{
+					Writer: os.Stdout,
+					LogLevels: []logrus.Level{
+						logrus.PanicLevel,
+						logrus.FatalLevel,
+						logrus.ErrorLevel,
+						logrus.WarnLevel,
+						logrus.InfoLevel,
+						logrus.DebugLevel,
+						logrus.TraceLevel,
+					},
+				})
+			}
 		}
 		instance.logs[name] = l
 	}

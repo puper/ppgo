@@ -15,18 +15,6 @@ type Log struct {
 
 type Config map[string]map[string]string
 
-type LogConfig struct {
-	Level         string        `json:"level"`
-	TraceLevel    string        `json:"traceLevel"`
-	Output        string        `json:"output"`
-	MaxSize       int           `json:"maxSize"`
-	MaxAge        int           `json:"maxAge"`
-	MaxBackups    int           `json:"maxBackups"`
-	Compress      bool          `json:"compress"`
-	InitialFields []interface{} `json:"initialFields"`
-	Format        string        `json:"format"`
-}
-
 func New(cfg *Config) (*Log, error) {
 	instance := &Log{
 		logs: make(map[string]*logrus.Logger),
