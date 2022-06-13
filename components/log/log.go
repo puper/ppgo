@@ -54,7 +54,7 @@ func New(cfg *Config) (*Log, error) {
 				maxSize = 1000
 			}
 			maxBackups, _ := strconv.Atoi(config["maxbackups"])
-			if config["maxsize"] == "" {
+			if config["maxbackups"] == "" {
 				maxBackups = 30
 			}
 			w := &lumberjack.Logger{
