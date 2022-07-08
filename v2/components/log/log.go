@@ -35,15 +35,15 @@ func New(cfg *Config) (*Log, error) {
 		if config["out"] != "std" {
 			maxAge, _ := strconv.Atoi(config["maxage"])
 			if config["maxage"] == "" {
-				maxAge = 30
+				maxAge = 10
 			}
 			maxSize, _ := strconv.Atoi(config["maxsize"])
 			if config["maxsize"] == "" {
-				maxSize = 1000
+				maxSize = 500
 			}
 			maxBackups, _ := strconv.Atoi(config["maxbackups"])
 			if config["maxbackups"] == "" {
-				maxBackups = 30
+				maxBackups = 10
 			}
 			w := &lumberjack.Logger{
 				Filename:   config["out"],
