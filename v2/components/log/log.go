@@ -21,7 +21,7 @@ type JsonFormatter struct {
 	logrus.JSONFormatter
 }
 
-func (me *JsonFormatter) For(entry *logrus.Entry) ([]byte, error) {
+func (me *JsonFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	b, err := me.JSONFormatter.Format(entry)
 	if err == nil {
 		buf := bytes.NewBufferString(time.Now().Format("2006-01-02 15:04:05.000") + " ")

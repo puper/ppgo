@@ -1,8 +1,10 @@
 package log
 
 import (
+	"bytes"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/writer"
@@ -14,6 +16,21 @@ type Log struct {
 }
 
 type Config map[string]map[string]string
+
+type JsonFormatter struct {
+	logrus.JSONFormatter
+}
+
+func (me *JsonFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+	b, err := me.JSONFormatter.Format(entry)
+	if err == nil {
+		buf := bytes.NewBufferString(time.Now().Format("2006-01-02 15:04:05.000") + " ")
+		buf.WriteString(entry.Level.String() + " ")
+		buf.Write(b)
+		return buf.Bytes(), nil
+	}
+	return b, err
+}
 
 func New(cfg *Config) (*Log, error) {
 	instance := &Log{
@@ -28,7 +45,7 @@ func New(cfg *Config) (*Log, error) {
 		}
 		l.Level = level
 		if config["format"] == "json" {
-			l.Formatter = &logrus.JSONFormatter{}
+			l.Formatter = &JsonFormatter{}
 		} else {
 			l.Formatter = &logrus.TextFormatter{}
 		}
