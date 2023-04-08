@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -36,6 +37,8 @@ type Config struct {
 	DisableAutomaticPing bool
 	// DisableForeignKeyConstraintWhenMigrating
 	DisableForeignKeyConstraintWhenMigrating bool
+	// IgnoreRelationshipsWhenMigrating
+	IgnoreRelationshipsWhenMigrating bool
 	// DisableNestedTransaction disable nested transaction
 	DisableNestedTransaction bool
 	// AllowGlobalUpdate allow global update
@@ -58,6 +61,7 @@ type Config struct {
 	cacheStore *sync.Map
 }
 
+// Apply update config to new config
 func (c *Config) Apply(config *Config) error {
 	if config != c {
 		*config = *c
@@ -65,6 +69,7 @@ func (c *Config) Apply(config *Config) error {
 	return nil
 }
 
+// AfterInitialize initialize plugins after db connected
 func (c *Config) AfterInitialize(db *DB) error {
 	if db != nil {
 		for _, plugin := range c.Plugins {
@@ -76,6 +81,7 @@ func (c *Config) AfterInitialize(db *DB) error {
 	return nil
 }
 
+// Option gorm option interface
 type Option interface {
 	Apply(*Config) error
 	AfterInitialize(*DB) error
@@ -95,6 +101,7 @@ type Session struct {
 	DryRun                   bool
 	PrepareStmt              bool
 	NewDB                    bool
+	Initialized              bool
 	SkipHooks                bool
 	SkipDefaultTransaction   bool
 	DisableNestedTransaction bool
@@ -111,13 +118,21 @@ type Session struct {
 func Open(dialector Dialector, opts ...Option) (db *DB, err error) {
 	config := &Config{}
 
+	sort.Slice(opts, func(i, j int) bool {
+		_, isConfig := opts[i].(*Config)
+		_, isConfig2 := opts[j].(*Config)
+		return isConfig && !isConfig2
+	})
+
 	for _, opt := range opts {
 		if opt != nil {
-			if err := opt.Apply(config); err != nil {
-				return nil, err
+			if applyErr := opt.Apply(config); applyErr != nil {
+				return nil, applyErr
 			}
 			defer func(opt Option) {
-				opt.AfterInitialize(db)
+				if errr := opt.AfterInitialize(db); errr != nil {
+					err = errr
+				}
 			}(opt)
 		}
 	}
@@ -166,7 +181,7 @@ func Open(dialector Dialector, opts ...Option) (db *DB, err error) {
 
 	preparedStmt := &PreparedStmtDB{
 		ConnPool:    db.ConnPool,
-		Stmts:       map[string]Stmt{},
+		Stmts:       make(map[string]*Stmt),
 		Mux:         &sync.RWMutex{},
 		PreparedSQL: make([]string, 0, 100),
 	}
@@ -235,10 +250,18 @@ func (db *DB) Session(config *Session) *DB {
 	if config.PrepareStmt {
 		if v, ok := db.cacheStore.Load(preparedStmtDBKey); ok {
 			preparedStmt := v.(*PreparedStmtDB)
-			tx.Statement.ConnPool = &PreparedStmtDB{
-				ConnPool: db.Config.ConnPool,
-				Mux:      preparedStmt.Mux,
-				Stmts:    preparedStmt.Stmts,
+			switch t := tx.Statement.ConnPool.(type) {
+			case Tx:
+				tx.Statement.ConnPool = &PreparedStmtTX{
+					Tx:             t,
+					PreparedStmtDB: preparedStmt,
+				}
+			default:
+				tx.Statement.ConnPool = &PreparedStmtDB{
+					ConnPool: db.Config.ConnPool,
+					Mux:      preparedStmt.Mux,
+					Stmts:    preparedStmt.Stmts,
+				}
 			}
 			txConfig.ConnPool = tx.Statement.ConnPool
 			txConfig.PrepareStmt = true
@@ -273,6 +296,10 @@ func (db *DB) Session(config *Session) *DB {
 		tx.Config.NowFunc = config.NowFunc
 	}
 
+	if config.Initialized {
+		tx = tx.getInstance()
+	}
+
 	return tx
 }
 
@@ -283,7 +310,8 @@ func (db *DB) WithContext(ctx context.Context) *DB {
 
 // Debug start debug mode
 func (db *DB) Debug() (tx *DB) {
-	return db.Session(&Session{
+	tx = db.getInstance()
+	return tx.Session(&Session{
 		Logger: db.Logger.LogMode(logger.Info),
 	})
 }
@@ -339,12 +367,12 @@ func (db *DB) DB() (*sql.DB, error) {
 		return sqldb, nil
 	}
 
-	return nil, ErrInvaildDB
+	return nil, ErrInvalidDB
 }
 
 func (db *DB) getInstance() *DB {
 	if db.clone > 0 {
-		tx := &DB{Config: db.Config}
+		tx := &DB{Config: db.Config, Error: db.Error}
 
 		if db.clone == 1 {
 			// clone with new statement
@@ -367,10 +395,12 @@ func (db *DB) getInstance() *DB {
 	return db
 }
 
+// Expr returns clause.Expr, which can be used to pass SQL expression as params
 func Expr(expr string, args ...interface{}) clause.Expr {
 	return clause.Expr{SQL: expr, Vars: args}
 }
 
+// SetupJoinTable setup join table schema
 func (db *DB) SetupJoinTable(model interface{}, field string, joinTable interface{}) error {
 	var (
 		tx                      = db.getInstance()
@@ -378,47 +408,50 @@ func (db *DB) SetupJoinTable(model interface{}, field string, joinTable interfac
 		modelSchema, joinSchema *schema.Schema
 	)
 
-	if err := stmt.Parse(model); err == nil {
-		modelSchema = stmt.Schema
-	} else {
+	err := stmt.Parse(model)
+	if err != nil {
 		return err
 	}
+	modelSchema = stmt.Schema
 
-	if err := stmt.Parse(joinTable); err == nil {
-		joinSchema = stmt.Schema
-	} else {
+	err = stmt.Parse(joinTable)
+	if err != nil {
 		return err
 	}
+	joinSchema = stmt.Schema
 
-	if relation, ok := modelSchema.Relationships.Relations[field]; ok && relation.JoinTable != nil {
-		for _, ref := range relation.References {
-			if f := joinSchema.LookUpField(ref.ForeignKey.DBName); f != nil {
-				f.DataType = ref.ForeignKey.DataType
-				f.GORMDataType = ref.ForeignKey.GORMDataType
-				if f.Size == 0 {
-					f.Size = ref.ForeignKey.Size
-				}
-				ref.ForeignKey = f
-			} else {
-				return fmt.Errorf("missing field %v for join table", ref.ForeignKey.DBName)
-			}
-		}
-
-		for name, rel := range relation.JoinTable.Relationships.Relations {
-			if _, ok := joinSchema.Relationships.Relations[name]; !ok {
-				rel.Schema = joinSchema
-				joinSchema.Relationships.Relations[name] = rel
-			}
-		}
-
-		relation.JoinTable = joinSchema
-	} else {
-		return fmt.Errorf("failed to found relation: %v", field)
+	relation, ok := modelSchema.Relationships.Relations[field]
+	isRelation := ok && relation.JoinTable != nil
+	if !isRelation {
+		return fmt.Errorf("failed to find relation: %s", field)
 	}
+
+	for _, ref := range relation.References {
+		f := joinSchema.LookUpField(ref.ForeignKey.DBName)
+		if f == nil {
+			return fmt.Errorf("missing field %s for join table", ref.ForeignKey.DBName)
+		}
+
+		f.DataType = ref.ForeignKey.DataType
+		f.GORMDataType = ref.ForeignKey.GORMDataType
+		if f.Size == 0 {
+			f.Size = ref.ForeignKey.Size
+		}
+		ref.ForeignKey = f
+	}
+
+	for name, rel := range relation.JoinTable.Relationships.Relations {
+		if _, ok := joinSchema.Relationships.Relations[name]; !ok {
+			rel.Schema = joinSchema
+			joinSchema.Relationships.Relations[name] = rel
+		}
+	}
+	relation.JoinTable = joinSchema
 
 	return nil
 }
 
+// Use use plugin
 func (db *DB) Use(plugin Plugin) error {
 	name := plugin.Name()
 	if _, ok := db.Plugins[name]; ok {
@@ -429,4 +462,19 @@ func (db *DB) Use(plugin Plugin) error {
 	}
 	db.Plugins[name] = plugin
 	return nil
+}
+
+// ToSQL for generate SQL string.
+//
+//	db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+//			return tx.Model(&User{}).Where(&User{Name: "foo", Age: 20})
+//				.Limit(10).Offset(5)
+//				.Order("name ASC")
+//				.First(&User{})
+//	})
+func (db *DB) ToSQL(queryFn func(tx *DB) *DB) string {
+	tx := queryFn(db.Session(&Session{DryRun: true, SkipDefaultTransaction: true}))
+	stmt := tx.Statement
+
+	return db.Dialector.Explain(stmt.SQL.String(), stmt.Vars...)
 }
