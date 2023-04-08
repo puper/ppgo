@@ -44,6 +44,10 @@ Revision ID: 5fc50a00491616d5cd0cbce3abd8b699838e25ca
  easyjson            8ab5ff9cd8e4e43     https://github.com/mailru/easyjson
                      2e8b79f6c47d324
                      a31dd803cf
+
+ securecookie        e59506cc896acb7    https://github.com/gorilla/securecookie
+                     f7bf732d4fdf5e2
+                     5f7ccd8983
  semver              4487282d78122a2     https://github.com/blang/semver 
                      45e413d7515e7c5                                              
                      16b70c33fd                                                                                                        
@@ -83,9 +87,10 @@ Revision ID: 5fc50a00491616d5cd0cbce3abd8b699838e25ca
  protobuf            6c66de79d66478d     https://github.com/golang/protobuf       
                      166c7ea05f5d2cc                                              
                      af016fbd6b                                                                                                    
- raymond             b565731e1464263     https://github.com/aymerick/raymond      
-                     de0bda75f2e45d9                                              
-                     7b54b60110                                                   
+ raymond             cd18a09da5ea49b     https://github.com/mailgun/raymond      
+                     b9a8cbec107a22a                                               
+                     9c0e792c21      
+                                                                 
  go-redis            7125bf611e5d7d9     https://github.com/go-redis/redis
                      bb4487dd6cb80d8
                      88bad92d23                                                            

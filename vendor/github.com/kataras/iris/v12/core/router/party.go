@@ -27,6 +27,10 @@ type Party interface {
 	//
 	// It returns the same `APIBuilder` featured with Dependency Injection.
 	ConfigureContainer(builder ...func(*APIContainer)) *APIContainer
+	// EnsureStaticBindings panics on struct handler (controller)
+	// if at least one input binding depends on the request and not in a static structure.
+	// Should be called before `RegisterDependency`.
+	EnsureStaticBindings() Party
 	// RegisterDependency calls the `ConfigureContainer.RegisterDependency` method
 	// with the provided value(s). See `HandleFunc` and `PartyConfigure` methods too.
 	RegisterDependency(dependencies ...interface{})
@@ -448,7 +452,10 @@ type Party interface {
 	// app.RegisterView(iris.$VIEW_ENGINE("./views", ".$extension"))
 	// my := app.Party("/my").Layout("layouts/mylayout.html")
 	// 	my.Get("/", func(ctx iris.Context) {
-	// 		ctx.View("page1.html")
+	// 	if err := ctx.View("page1.html"); err != nil {
+	//	  ctx.HTML("<h3>%s</h3>", err.Error())
+	//	  return
+	//  }
 	// 	})
 	//
 	// Examples: https://github.com/kataras/iris/tree/master/_examples/view

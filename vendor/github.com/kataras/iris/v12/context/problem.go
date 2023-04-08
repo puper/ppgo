@@ -14,7 +14,7 @@ import (
 // Pass a Problem value to `context.Problem` to
 // write an "application/problem+json" response.
 //
-// Read more at: https://github.com/kataras/iris/wiki/Routing-error-handlers
+// Read more at: https://github.com/kataras/iris/blob/master/_examples/routing/http-errors.
 type Problem map[string]interface{}
 
 // NewProblem retruns a new Problem.
@@ -230,6 +230,9 @@ func (p Problem) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
 	if err != nil {
 		return err
 	}
+
+	// toTitle := cases.Title(language.English)
+	// toTitle.String(k)
 
 	for k, v := range p {
 		// convert keys like "type" to "Type", "productName" to "ProductName" and e.t.c. when xml.

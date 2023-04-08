@@ -46,6 +46,16 @@ type Application interface {
 	// Returns an error on failure, otherwise nil.
 	View(writer io.Writer, filename string, layout string, bindingData interface{}) error
 
+	// GetContextPool returns the Iris sync.Pool which holds the contexts values.
+	// Iris automatically releases the request context, so you don't have to use it.
+	// It's only useful to manually release the context on cases that connection
+	// is hijacked by a third-party middleware and the http handler return too fast.
+	GetContextPool() *Pool
+
+	// GetContextErrorHandler returns the handler which handles errors
+	// on JSON write failures.
+	GetContextErrorHandler() ErrorHandler
+
 	// ServeHTTPC is the internal router, it's visible because it can be used for advanced use cases,
 	// i.e: routing within a foreign context.
 	//

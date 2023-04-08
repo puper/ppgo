@@ -1,5 +1,3 @@
-<!-- # History/Changelog <a href="HISTORY_ZH.md"> <img width="20px" src="https://iris-go.com/images/flag-china.svg?v=10" /></a><a href="HISTORY_ID.md"> <img width="20px" src="https://iris-go.com/images/flag-indonesia.svg?v=10" /></a><a href="HISTORY_GR.md"> <img width="20px" src="https://iris-go.com/images/flag-greece.svg?v=10" /></a> -->
-
 # Changelog
 
 ### Looking for free and real-time support?
@@ -19,14 +17,79 @@
 
 Developers are not forced to upgrade if they don't really need it. Upgrade whenever you feel ready.
 
-**How to upgrade**: Open your command-line and execute this command: `go get github.com/kataras/iris/v12@latest`.
+**How to upgrade**: Open your command-line and execute this command: `go get github.com/kataras/iris/v12@latest` and `go mod tidy -compat=1.20`.
 
-# Next
+# Sa, 11 March 2023 | v12.2.0
 
 This release introduces new features and some breaking changes.
 The codebase for Dependency Injection, Internationalization and localization and more have been simplified a lot (fewer LOCs and easier to read and follow up).
 
+## 24 Dec 2022
+
+All new features have been tested in production and seem to work fine. Fixed all reported and reproducible bugs. The `v12.2.0-beta7` is the latest beta release of v12.2.0. Expect the final public and stable release of v12.2.0 shortly after February 2023.
+
 ## Fixes and Improvements
+ 
+- Add `iris.TrimParamFilePart` to handle cases like [#2024](https://github.com/kataras/iris/issues/2024) and improve the [_examples/routing/dynamic-path/main.go](_examples/routing/dynamic-path/main.go#L356) example to include that case as well.
+
+- **Breaking-change**: HTML template functions `yield`, `part`, `partial`, `partial_r` and `render` now accept (and require for some cases) a second argument of the binding data context too. Convert: `{{ yield }}` to `{{ yield . }}`, `{{ render "templates/mytemplate.html" }}` to `{{ render "templates/mytemplate.html" . }}`, `{{ partial "partials/mypartial.html" }}` to `{{ partial "partials/mypartial.html" . }}` and so on.
+
+- Add new `URLParamSeparator` to the configuration. Defaults to "," but can be set to an empty string to disable splitting query values on `Context.URLParamSlice` method.
+
+- [PR #1992](https://github.com/kataras/iris/pull/1992): Added support for third party packages on [httptest](https://github.com/kataras/iris/tree/master/httptest). An example using 3rd-party module named [Ginkgo](github.com/onsi/ginkgo) can be found [here](https://github.com/kataras/iris/blob/master/_examples/testing/ginkgotest). 
+
+- Add `Context.Render` method for compatibility.
+
+- Support of embedded [locale files](https://github.com/kataras/iris/blob/master/_examples/i18n/template-embedded/main.go) using standard `embed.FS` with the new `LoadFS` function.
+- Support of direct embedded view engines (`HTML, Blocks, Django, Handlebars, Pug, Amber, Jet` and `Ace`) with `embed.FS` or `fs.FS` (in addition to `string` and `http.FileSystem` types).
+- Add support for `embed.FS` and `fs.FS` on `app.HandleDir`.
+
+- Add `iris.Patches()` package-level function to customize Iris Request Context REST (and more to come) behavior.
+- Minor fixes.
+
+- Enable setting a custom "go-redis" client through `SetClient` go redis driver method or `Client` struct field on sessions/database/redis driver as requested at [chat](https://chat.iris-go.com).
+- Ignore `"csrf.token"` form data key when missing on `ctx.ReadForm` by default as requested at [#1941](https://github.com/kataras/iris/issues/1941).
+
+- Fix [CVE-2020-5398](https://github.com/advisories/GHSA-8wx2-9q48-vm9r).
+
+- New `{x:weekday}` path parameter type, example code:
+
+```go
+// 0 to 7 (leading zeros don't matter) or "Sunday" to "Monday" or "sunday" to "monday".
+// http://localhost:8080/schedule/monday or http://localhost:8080/schedule/Monday or
+// http://localhost:8080/schedule/1 or http://localhost:8080/schedule/0001.
+app.Get("/schedule/{day:weekday}", func(ctx iris.Context) {
+    day, _ := ctx.Params().GetWeekday("day")
+    ctx.Writef("Weekday requested was: %v\n", day)
+})
+```
+
+- Make the `Context.JSON` method customizable by modifying the `context.WriteJSON` package-level function.
+- Add new `iris.NewGuide` which helps you build a simple and nice JSON API with services as dependencies and better design pattern.
+- Make `Context.Domain()` customizable by letting developers to modify the `Context.GetDomain` package-level function.
+- Remove Request Context-based Transaction feature as its usage can be replaced with just the Iris Context (as of go1.7+) and better [project](_examples/project) structure.
+- Fix [#1882](https://github.com/kataras/iris/issues/1882)
+- Fix [#1877](https://github.com/kataras/iris/issues/1877)
+- Fix [#1876](https://github.com/kataras/iris/issues/1876)
+
+- New `date` dynamic path parameter type. E.g. `/blog/{param:date}` matches to `"/blog/2022/04/21"`.
+
+- Add `iris.AllowQuerySemicolons` and `iris.WithoutServerError(iris.ErrURLQuerySemicolon)` to handle golang.org/issue/25192 as reported at: https://github.com/kataras/iris/issues/1875. 
+- Add new `Application.SetContextErrorHandler` to globally customize the default behavior (status code 500 without body) on `JSON`, `JSONP`, `Protobuf`, `MsgPack`, `XML`, `YAML` and `Markdown` method call write errors instead of catching the error on each handler.
+- Add new [x/pagination](x/pagination/pagination.go) sub-package which supports generics code (go 1.18+).
+- Add new [middleware/modrevision](middleware/modrevision) middleware (example at [_examples/project/api/router.go]_examples/project/api/router.go).
+- Add `iris.BuildRevision` and `iris.BuildTime` to embrace the new go's 1.18 debug build information.
+
+- ~Add `Context.SetJSONOptions` to customize on a higher level the JSON options on `Context.JSON` calls.~ update: remains as it's, per JSON call.
+- Add new [auth](auth) sub-package which helps on any user type auth using JWT (access & refresh tokens) and a cookie (optional).
+
+- Add `Party.EnsureStaticBindings` which, if called, the MVC binder panics if a struct's input binding depends on the HTTP request data instead of a static dependency. This is useful to make sure your API crafted through `Party.PartyConfigure` depends only on struct values you already defined at `Party.RegisterDependency` == will never use reflection at serve-time (maximum performance).
+
+- Add a new [x/sqlx](/x/sqlx/) sub-package ([example](_examples/database/sqlx/main.go)).
+
+- Add a new [x/reflex](/x/reflex) sub-package. 
+
+- Add `Context.ReadMultipartRelated` as requested at: [issues/#1787](https://github.com/kataras/iris/issues/1787).
 
 - Add `Container.DependencyMatcher` and `Dependency.Match` to implement the feature requested at [issues/#1842](https://github.com/kataras/iris/issues/1842).
 
@@ -56,7 +119,7 @@ The codebase for Dependency Injection, Internationalization and localization and
 
 - New `apps.OnApplicationRegistered` method which listens on new Iris applications hosted under the same binary. Use it on your `init` functions to configure Iris applications by any spot in your project's files.
 
-- `Context.JSON` respects any object implements the `easyjson.Marshaler` interface and renders the result using the [easyjon](https://github.com/mailru/easyjson)'s writer.
+- `Context.JSON` respects any object implements the `easyjson.Marshaler` interface and renders the result using the [easyjon](https://github.com/mailru/easyjson)'s writer. **Set** the `Configuration.EnableProtoJSON` and `Configuration.EnableEasyJSON` to true in order to enable this feature.
 
 - minor: `Context` structure implements the standard go Context interface now (includes: Deadline, Done, Err and Value methods). Handlers can now just pass the `ctx iris.Context` as a shortcut of `ctx.Request().Context()` when needed.
 
@@ -669,7 +732,7 @@ Prior to this version the `iris.Context` was the only one dependency that has be
 | `uint, uint8, uint16, uint32, uint64`, | |
 | `float, float32, float64`, | |
 | `bool`, | |
-| `slice` | [Path Parameter](https://github.com/kataras/iris/wiki/Routing-path-parameter-types) |
+| `slice` | [Path Parameter](https://github.com/kataras/iris/blob/master/_examples/routing/dynamic-path/main.go#L20) |
 | Struct | [Request Body](https://github.com/kataras/iris/tree/master/_examples/request-body) of `JSON`, `XML`, `YAML`, `Form`, `URL Query`, `Protobuf`, `MsgPack` |
 
 Here is a preview of what the new Hero handlers look like:
@@ -941,7 +1004,7 @@ Various improvements and linting.
 
 # Su, 29 December 2019 | v12.1.4
 
-Minor fix on serving [embedded files](https://github.com/kataras/iris/wiki/File-server).
+Minor fix on serving embedded files.
 
 # We, 25 December 2019 | v12.1.3
 
@@ -1006,15 +1069,13 @@ All known issues.
 
 ### Internationalization and localization
 
-Support for i18n is now a **builtin feature** and is being respected across your entire application, per say [sitemap](https://github.com/kataras/iris/wiki/Sitemap) and [views](https://github.com/kataras/iris/blob/master/_examples/i18n/basic/main.go#L50).
-
-Refer to the wiki section: https://github.com/kataras/iris/wiki/Sitemap for details.
+Support for i18n is now a **builtin feature** and is being respected across your entire application, per say [sitemap](https://github.com/kataras/iris/blob/master/_examples/routing/sitemap/main.go) and [views](https://github.com/kataras/iris/blob/master/_examples/i18n/basic/main.go#L50).
 
 ### Sitemaps
 
 Iris generates and serves one or more [sitemap.xml](https://www.sitemaps.org/protocol.html) for your static routes.
 
-Navigate through: https://github.com/kataras/iris/wiki/Sitemap for more.
+Navigate through: https://github.com/kataras/iris/blob/master/_examples/routing/sitemap/main.go for more.
 
 ## New Examples
 
@@ -1066,7 +1127,7 @@ This minor version contains improvements on the Problem Details for HTTP APIs im
 - Add `ProblemOptions` with `RetryAfter` as requested at: https://github.com/kataras/iris/issues/1335#issuecomment-521330994.
 - Add `iris.JSON` alias for `context#JSON` options type.
 
-[Example](https://github.com/kataras/iris/blob/45d7c6fedb5adaef22b9730592255f7bb375e809/_examples/routing/http-errors/main.go#L85) and [wikis](https://github.com/kataras/iris/wiki/Routing-error-handlers#the-problem-type) updated. 
+[Example](https://github.com/kataras/iris/blob/45d7c6fedb5adaef22b9730592255f7bb375e809/_examples/routing/http-errors/main.go#L85) updated. 
 
 References:
 

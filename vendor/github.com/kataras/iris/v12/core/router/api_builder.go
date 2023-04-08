@@ -39,6 +39,13 @@ var AllMethods = []string{
 	http.MethodTrace,
 }
 
+// RegisterMethods adds custom http methods to the "AllMethods" list.
+// Use it on initialization of your program.
+func RegisterMethods(newCustomHTTPVerbs ...string) {
+	newMethods := append(AllMethods, newCustomHTTPVerbs...)
+	AllMethods = removeDuplicates(newMethods)
+}
+
 // repository passed to all parties(subrouters), it's the object witch keeps
 // all the routes.
 type repository struct {
@@ -61,7 +68,13 @@ func (repo *repository) getRelative(r *Route) *Route {
 	}
 
 	for _, route := range repo.routes {
-		if r.Subdomain == route.Subdomain && r.StatusCode == route.StatusCode && r.Method == route.Method && r.FormattedPath == route.FormattedPath && !route.tmpl.IsTrailing() {
+		if r.tmpl.Src == route.tmpl.Src { // No topLink on the same route syntax.
+			// Fixes #2008, because of APIBuilder.handle, repo.getRelative and repo.register replacement but with a toplink of the old route.
+			continue
+		}
+
+		if r.Subdomain == route.Subdomain && r.StatusCode == route.StatusCode && r.Method == route.Method &&
+			r.FormattedPath == route.FormattedPath && !route.tmpl.IsTrailing() {
 			return route
 		}
 	}
@@ -117,11 +130,10 @@ func (repo *repository) register(route *Route, rule RouteRegisterRule) (*Route, 
 				repo.routes = append(repo.routes[:i], repo.routes[i+1:]...)
 			}
 
-			continue
+			break // continue
 		}
 	}
 
-	// fmt.Printf("repo.routes append:\t%#+v\n\n", route)
 	repo.routes = append(repo.routes, route)
 
 	if route.StatusCode == 0 { // a common resource route, not a status code error handler.
@@ -339,6 +351,15 @@ func (api *APIBuilder) ConfigureContainer(builder ...func(*APIContainer)) *APICo
 	return api.apiBuilderDI
 }
 
+// EnsureStaticBindings panics on struct handler (controller)
+// if at least one input binding depends on the request and not in a static structure.
+// Should be called before `RegisterDependency`.
+func (api *APIBuilder) EnsureStaticBindings() Party {
+	diContainer := api.ConfigureContainer()
+	diContainer.Container.DisableStructDynamicBindings = true
+	return api
+}
+
 // RegisterDependency calls the `ConfigureContainer.RegisterDependency` method
 // with the provided value(s). See `HandleFunc` and `PartyConfigure` methods too.
 func (api *APIBuilder) RegisterDependency(dependencies ...interface{}) {
@@ -361,8 +382,9 @@ func (api *APIBuilder) RegisterDependency(dependencies ...interface{}) {
 // (see ConfigureContainer().RegisterDependency)
 // or leave the framework to parse the request and fill the values accordingly.
 // The output of the "handlersFn" can be any output result:
-//  custom structs <T>, string, []byte, int, error,
-//  a combination of the above, hero.Result(hero.View | hero.Response) and more.
+//
+//	custom structs <T>, string, []byte, int, error,
+//	a combination of the above, hero.Result(hero.View | hero.Response) and more.
 //
 // If more than one handler function is registered
 // then the execution happens without the nessecity of the `Context.Next` method,
@@ -374,22 +396,22 @@ func (api *APIBuilder) RegisterDependency(dependencies ...interface{}) {
 // The client's request body and server's response body Go types.
 // Could be any data structure.
 //
-// 	type (
-// 		request struct {
-// 			Firstname string `json:"firstname"`
-// 			Lastname string `json:"lastname"`
-// 		}
+//	type (
+//		request struct {
+//			Firstname string `json:"firstname"`
+//			Lastname string `json:"lastname"`
+//		}
 //
-// 		response struct {
-// 			ID uint64 `json:"id"`
-// 			Message string `json:"message"`
-// 		}
-// 	)
+//		response struct {
+//			ID uint64 `json:"id"`
+//			Message string `json:"message"`
+//		}
+//	)
 //
 // Register the route hander.
 //
-//              HTTP VERB    ROUTE PATH       ROUTE HANDLER
-//  app.HandleFunc("PUT", "/users/{id:uint64}", updateUser)
+//	            HTTP VERB    ROUTE PATH       ROUTE HANDLER
+//	app.HandleFunc("PUT", "/users/{id:uint64}", updateUser)
 //
 // Code the route handler function.
 // Path parameters and request body are binded
@@ -397,26 +419,26 @@ func (api *APIBuilder) RegisterDependency(dependencies ...interface{}) {
 // The "id" uint64 binds to "{id:uint64}" route path parameter and
 // the "input" binds to client request data such as JSON.
 //
-// 	func updateUser(id uint64, input request) response {
-// 		// [custom logic...]
+//	func updateUser(id uint64, input request) response {
+//		// [custom logic...]
 //
-// 		return response{
-// 			ID:id,
-// 			Message: "User updated successfully",
-// 		}
-// 	}
+//		return response{
+//			ID:id,
+//			Message: "User updated successfully",
+//		}
+//	}
 //
 // Simulate a client request which sends data
 // to the server and prints out the response.
 //
-// 	curl --request PUT -d '{"firstname":"John","lastname":"Doe"}' \
-// 	-H "Content-Type: application/json" \
-// 	http://localhost:8080/users/42
+//	curl --request PUT -d '{"firstname":"John","lastname":"Doe"}' \
+//	-H "Content-Type: application/json" \
+//	http://localhost:8080/users/42
 //
-// 	{
-// 		"id": 42,
-// 		"message": "User updated successfully"
-// 	}
+//	{
+//		"id": 42,
+//		"message": "User updated successfully"
+//	}
 //
 // See the `ConfigureContainer` for more features regrading
 // the dependency injection, mvc and function handlers.
@@ -458,11 +480,12 @@ func (api *APIBuilder) AllowMethods(methods ...string) Party {
 // For example, if for some reason the desired result is the (done or all) handlers to be executed no matter what
 // even if no `ctx.Next()` is called in the previous handlers, including the begin(`Use`),
 // the main(`Handle`) and the done(`Done`) handlers themselves, then:
-// Party#SetExecutionRules(iris.ExecutionRules {
-//   Begin: iris.ExecutionOptions{Force: true},
-//   Main:  iris.ExecutionOptions{Force: true},
-//   Done:  iris.ExecutionOptions{Force: true},
-// })
+//
+//	Party#SetExecutionRules(iris.ExecutionRules {
+//	  Begin: iris.ExecutionOptions{Force: true},
+//	  Main:  iris.ExecutionOptions{Force: true},
+//	  Done:  iris.ExecutionOptions{Force: true},
+//	})
 //
 // Note that if : true then the only remained way to "break" the handler chain is by `ctx.StopExecution()` now that `ctx.Next()` does not matter.
 //
@@ -551,11 +574,14 @@ func (api *APIBuilder) handle(errorCode int, method string, relativePath string,
 // otherwise use `Party` which can handle many paths with different handlers and middlewares.
 //
 // Usage:
-// 	app.HandleMany("GET", "/user /user/{id:uint64} /user/me", genericUserHandler)
+//
+//	app.HandleMany("GET", "/user /user/{id:uint64} /user/me", genericUserHandler)
+//
 // At the other side, with `Handle` we've had to write:
-// 	app.Handle("GET", "/user", userHandler)
-// 	app.Handle("GET", "/user/{id:uint64}", userByIDHandler)
-// 	app.Handle("GET", "/user/me", userMeHandler)
+//
+//	app.Handle("GET", "/user", userHandler)
+//	app.Handle("GET", "/user/{id:uint64}", userByIDHandler)
+//	app.Handle("GET", "/user/me", userMeHandler)
 //
 // app.HandleMany("GET POST", "/path", handler)
 func (api *APIBuilder) HandleMany(methodOrMulti string, relativePathorMulti string, handlers ...context.Handler) (routes []*Route) {
@@ -590,13 +616,21 @@ func (api *APIBuilder) HandleMany(methodOrMulti string, relativePathorMulti stri
 //
 // Alternatively, to get just the handler for that look the FileServer function instead.
 //
-//     api.HandleDir("/static", iris.Dir("./assets"), iris.DirOptions{IndexName: "/index.html", Compress: true})
+//	api.HandleDir("/static", iris.Dir("./assets"), iris.DirOptions{IndexName: "/index.html", Compress: true})
 //
 // Returns all the registered routes, including GET index and path patterm and HEAD.
 //
 // Usage:
 // HandleDir("/public", "./assets", DirOptions{...}) or
 // HandleDir("/public", iris.Dir("./assets"), DirOptions{...})
+// OR
+// //go:embed assets/*
+// var filesystem embed.FS
+// HandleDir("/public",filesystem, DirOptions{...})
+// OR to pick a specific folder of the embedded filesystem:
+// import "io/fs"
+// subFilesystem, err := fs.Sub(filesystem, "assets")
+// HandleDir("/public",subFilesystem, DirOptions{...})
 //
 // Examples:
 // https://github.com/kataras/iris/tree/master/_examples/file-server
@@ -606,16 +640,7 @@ func (api *APIBuilder) HandleDir(requestPath string, fsOrDir interface{}, opts .
 		options = opts[0]
 	}
 
-	var fs http.FileSystem
-	switch v := fsOrDir.(type) {
-	case string:
-		fs = http.Dir(v)
-	case http.FileSystem:
-		fs = v
-	default:
-		panic(fmt.Errorf(`unexpected "fsOrDir" argument type of %T (string or http.FileSystem)`, v))
-	}
-
+	fs := context.ResolveHTTPFS(fsOrDir)
 	h := FileServer(fs, options)
 	description := "file server"
 	if d, ok := fs.(http.Dir); ok {
@@ -759,8 +784,8 @@ func (api *APIBuilder) createRoutes(errorCode int, methods []string, relativePat
 		}
 
 		// The caller tiself, if anonymous, it's the first line of `app.X("/path", here)`
-		route.RegisterFileName = filename
-		route.RegisterLineNumber = line
+		route.RegisterFileName = mainHandlerFileName     // filename
+		route.RegisterLineNumber = mainHandlerFileNumber // line
 
 		route.MainHandlerName = mainHandlerName
 		route.MainHandlerIndex = mainHandlerIndex
@@ -888,12 +913,13 @@ func (api *APIBuilder) Party(relativePath string, handlers ...context.Handler) P
 // Note: `iris#Party` and `core/router#Party` describes the exactly same interface.
 //
 // Usage:
-// app.PartyFunc("/users", func(u iris.Party){
-//	u.Use(authMiddleware, logMiddleware)
-//	u.Get("/", getAllUsers)
-//	u.Post("/", createOrUpdateUser)
-//	u.Delete("/", deleteUser)
-// })
+//
+//	app.PartyFunc("/users", func(u iris.Party){
+//		u.Use(authMiddleware, logMiddleware)
+//		u.Get("/", getAllUsers)
+//		u.Post("/", createOrUpdateUser)
+//		u.Delete("/", deleteUser)
+//	})
 //
 // Look `Party` for more.
 func (api *APIBuilder) PartyFunc(relativePath string, partyBuilderFunc func(p Party)) Party {
@@ -933,16 +959,21 @@ type (
 // Useful when the api's dependencies amount are too much to pass on a function.
 //
 // Usage:
-//  app.PartyConfigure("/users", &api.UsersAPI{UserRepository: ..., ...})
+//
+//	app.PartyConfigure("/users", &api.UsersAPI{UserRepository: ..., ...})
+//
 // Where UsersAPI looks like:
-//  type UsersAPI struct { [...] }
-//  func(api *UsersAPI) Configure(router iris.Party) {
-//   router.Get("/{id:uuid}", api.getUser)
-//   [...]
-//  }
+//
+//	type UsersAPI struct { [...] }
+//	func(api *UsersAPI) Configure(router iris.Party) {
+//	 router.Get("/{id:uuid}", api.getUser)
+//	 [...]
+//	}
+//
 // Usage with (static) dependencies:
-//  app.RegisterDependency(userRepo, ...)
-//  app.PartyConfigure("/users", new(api.UsersAPI))
+//
+//	app.RegisterDependency(userRepo, ...)
+//	app.PartyConfigure("/users", new(api.UsersAPI))
 func (api *APIBuilder) PartyConfigure(relativePath string, partyReg ...PartyConfigurator) Party {
 	var child Party
 
@@ -1028,6 +1059,23 @@ func (api *APIBuilder) Properties() context.Map {
 // Needs refresh of the router to Method or Path or Handlers changes to take place.
 func (api *APIBuilder) GetRoutes() []*Route {
 	return api.routes.getAll()
+}
+
+// CountHandlers returns the total number of all unique
+// registered route handlers.
+func (api *APIBuilder) CountHandlers() int {
+	uniqueNames := make(map[string]struct{})
+
+	for _, r := range api.GetRoutes() {
+		for _, h := range r.Handlers {
+			handlerName := context.HandlerName(h)
+			if _, exists := uniqueNames[handlerName]; !exists {
+				uniqueNames[handlerName] = struct{}{}
+			}
+		}
+	}
+
+	return len(uniqueNames)
 }
 
 // GetRoute returns the registered route based on its name, otherwise nil.
@@ -1610,15 +1658,16 @@ func (api *APIBuilder) RegisterView(viewEngine context.ViewEngine) {
 
 // FallbackView registers one or more fallback views for a template or a template layout.
 // Usage:
-//  FallbackView(iris.FallbackView("fallback.html"))
-//  FallbackView(iris.FallbackViewLayout("layouts/fallback.html"))
-//  OR
-//  FallbackView(iris.FallbackViewFunc(ctx iris.Context, err iris.ErrViewNotExist) error {
-//    err.Name is the previous template name.
-//    err.IsLayout reports whether the failure came from the layout template.
-//    err.Data is the template data provided to the previous View call.
-//    [...custom logic e.g. ctx.View("fallback", err.Data)]
-//  })
+//
+//	FallbackView(iris.FallbackView("fallback.html"))
+//	FallbackView(iris.FallbackViewLayout("layouts/fallback.html"))
+//	OR
+//	FallbackView(iris.FallbackViewFunc(ctx iris.Context, err iris.ErrViewNotExist) error {
+//	  err.Name is the previous template name.
+//	  err.IsLayout reports whether the failure came from the layout template.
+//	  err.Data is the template data provided to the previous View call.
+//	  [...custom logic e.g. ctx.View("fallback", err.Data)]
+//	})
 func (api *APIBuilder) FallbackView(provider context.FallbackViewProvider) {
 	handler := func(ctx *context.Context) {
 		ctx.FallbackView(provider)
@@ -1637,9 +1686,13 @@ func (api *APIBuilder) FallbackView(provider context.FallbackViewProvider) {
 // app := iris.New()
 // app.RegisterView(iris.$VIEW_ENGINE("./views", ".$extension"))
 // my := app.Party("/my").Layout("layouts/mylayout.html")
-// 	my.Get("/", func(ctx iris.Context) {
-// 		ctx.View("page1.html")
-// 	})
+//
+//		my.Get("/", func(ctx iris.Context) {
+//		if err := ctx.View("page1.html"); err != nil {
+//		  ctx.HTML("<h3>%s</h3>", err.Error())
+//		  return
+//	 }
+//		})
 //
 // Examples: https://github.com/kataras/iris/tree/master/_examples/view
 func (api *APIBuilder) Layout(tmplLayoutFile string) Party {

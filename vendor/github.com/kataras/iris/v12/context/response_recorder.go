@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/textproto"
 	"strconv"
@@ -29,17 +29,14 @@ func releaseResponseRecorder(w *ResponseRecorder) {
 	rrpool.Put(w)
 }
 
-// A ResponseRecorder is used mostly by context's transactions
-// in order to record and change if needed the body, status code and headers.
+// A ResponseRecorder is used mostly for testing
+// in order to record and modify, if necessary, the body and status code and headers.
 //
-// Developers are not limited to manually ask to record a response.
-// To turn on the recorder from a Handler,
-// rec := context.Recorder()
+// See `context.Recorder“ method too.
 type ResponseRecorder struct {
 	ResponseWriter
 
-	// keep track of the body in order to be
-	// resetable and useful inside custom transactions
+	// keep track of the body written.
 	chunks []byte
 	// the saved headers
 	headers http.Header
@@ -142,6 +139,11 @@ func (w *ResponseRecorder) ClearHeaders() {
 
 // Reset clears headers, sets the status code to 200
 // and clears the cached body.
+//
+// - Use ResetBody() and ResetHeaders() instead to keep compression after reseting.
+//
+// - Use Reset() & ResponseRecorder.ResponseWriter.(*context.CompressResponseWriter).Disabled = true
+// to set a new body without compression when the previous handler was iris.Compression.
 //
 // Implements the `ResponseWriterReseter`.
 func (w *ResponseRecorder) Reset() bool {
@@ -364,7 +366,7 @@ func (w *ResponseRecorder) Result() *http.Response { // a modified copy of net/h
 	}
 	res.Status = fmt.Sprintf("%03d %s", res.StatusCode, http.StatusText(res.StatusCode))
 	if w.chunks != nil {
-		res.Body = ioutil.NopCloser(bytes.NewReader(w.chunks))
+		res.Body = io.NopCloser(bytes.NewReader(w.chunks))
 	} else {
 		res.Body = http.NoBody
 	}

@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"mime"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -30,9 +30,7 @@ import (
 
 	"github.com/Shopify/goreferrer"
 	"github.com/fatih/structs"
-	gojson "github.com/goccy/go-json"
 	"github.com/iris-contrib/schema"
-	"github.com/kataras/golog"
 	"github.com/mailru/easyjson"
 	"github.com/mailru/easyjson/jwriter"
 	"github.com/microcosm-cc/bluemonday"
@@ -43,6 +41,15 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
+)
+
+var (
+	// BuildRevision holds the vcs commit id information of the program's build.
+	// Available at go version 1.18+
+	BuildRevision string
+	// BuildTime holds the vcs commit time information of the program's build.
+	// Available at go version 1.18+
+	BuildTime string
 )
 
 type (
@@ -91,7 +98,7 @@ type (
 	// is terminated and the error is received by the ReadJSONStream method,
 	// otherwise it continues to read the next available object.
 	// Look the `Context.ReadJSONStream` method.
-	DecodeFunc func(ctx stdContext.Context, outPtr interface{}) error
+	DecodeFunc func(outPtr interface{}) error
 )
 
 // Unmarshal parses the X-encoded data and stores the result in the value pointed to by v.
@@ -147,6 +154,9 @@ type Context struct {
 	// Also it's responsible to keep the old value of the last known handler index
 	// before StopExecution. See ResumeExecution.
 	proceeded int
+
+	// if true, caller is responsible to release the context (put the context to the pool).
+	manualRelease bool
 }
 
 // NewContext returns a new Context instance.
@@ -190,6 +200,7 @@ func (ctx *Context) Clone() *Context {
 		request:             req,
 		currentHandlerIndex: stopExecutionIndex,
 		proceeded:           ctx.proceeded,
+		manualRelease:       ctx.manualRelease,
 		currentRoute:        ctx.currentRoute,
 	}
 }
@@ -213,6 +224,7 @@ func (ctx *Context) BeginRequest(w http.ResponseWriter, r *http.Request) {
 	ctx.request = r
 	ctx.currentHandlerIndex = 0
 	ctx.proceeded = 0
+	ctx.manualRelease = false
 	ctx.writer = AcquireResponseWriter()
 	ctx.writer.BeginResponse(w)
 }
@@ -231,6 +243,12 @@ func (ctx *Context) EndRequest() {
 
 	ctx.writer.FlushResponse()
 	ctx.writer.EndResponse()
+}
+
+// DisablePoolRelease disables the auto context pool Put call.
+// Do NOT use it, unless you know what you are doing.
+func (ctx *Context) DisablePoolRelease() {
+	ctx.manualRelease = true
 }
 
 // IsCanceled reports whether the client canceled the request
@@ -519,7 +537,6 @@ func (ctx *Context) Do(handlers Handlers) {
 // Router is calling this function to add the route's handler.
 // If AddHandler called then the handlers will be inserted
 // to the end of the already-defined route's handler.
-//
 func (ctx *Context) AddHandler(handlers ...Handler) {
 	ctx.handlers = append(ctx.handlers, handlers...)
 }
@@ -570,23 +587,26 @@ func (ctx *Context) HandlerIndex(n int) (currentIndex int) {
 //
 // That said let's see an example of `ctx.Proceed`:
 //
-// var authMiddleware = basicauth.New(basicauth.Config{
-// 	Users: map[string]string{
-// 		"admin": "password",
-// 	},
-// })
+//	var authMiddleware = basicauth.New(basicauth.Config{
+//		Users: map[string]string{
+//			"admin": "password",
+//		},
+//	})
 //
-// func (c *UsersController) BeginRequest(ctx iris.Context) {
-// 	if !ctx.Proceed(authMiddleware) {
-// 		ctx.StopExecution()
-// 	}
-// }
+//	func (c *UsersController) BeginRequest(ctx iris.Context) {
+//		if !ctx.Proceed(authMiddleware) {
+//			ctx.StopExecution()
+//		}
+//	}
+//
 // This Get() will be executed in the same handler as `BeginRequest`,
 // internally controller checks for `ctx.StopExecution`.
 // So it will not be fired if BeginRequest called the `StopExecution`.
-// func(c *UsersController) Get() []models.User {
-//	  return c.Service.GetAll()
-//}
+//
+//	func(c *UsersController) Get() []models.User {
+//		  return c.Service.GetAll()
+//	}
+//
 // Alternative way is `!ctx.IsStopped()` if middleware make use of the `ctx.StopExecution()` on failure.
 func (ctx *Context) Proceed(h Handler) bool {
 	_, ok := ctx.ProceedAndReportIfStopped(h)
@@ -819,9 +839,9 @@ func (ctx *Context) StopWithPlainError(statusCode int, err error) {
 //
 // If the status code is a failure one then
 // it will also fire the specified error code handler.
-func (ctx *Context) StopWithJSON(statusCode int, jsonObject interface{}) {
+func (ctx *Context) StopWithJSON(statusCode int, jsonObject interface{}) error {
 	ctx.StopWithStatus(statusCode)
-	ctx.JSON(jsonObject)
+	return ctx.writeJSON(jsonObject, &DefaultJSONOptions) // do not modify - see errors.DefaultContextErrorHandler.
 }
 
 // StopWithProblem stops the handlers chain, writes the status code
@@ -830,10 +850,10 @@ func (ctx *Context) StopWithJSON(statusCode int, jsonObject interface{}) {
 //
 // If the status code is a failure one then
 // it will also fire the specified error code handler.
-func (ctx *Context) StopWithProblem(statusCode int, problem Problem) {
+func (ctx *Context) StopWithProblem(statusCode int, problem Problem) error {
 	ctx.StopWithStatus(statusCode)
 	problem.Status(statusCode)
-	ctx.Problem(problem)
+	return ctx.Problem(problem)
 }
 
 //  +------------------------------------------------------------+
@@ -917,7 +937,7 @@ func (ctx *Context) RequestPath(escape bool) string {
 
 const sufscheme = "://"
 
-// GetScheme returns the full scheme of the request URL (https://, http:// or ws:// and e.t.c.``).
+// GetScheme returns the full scheme of the request URL (https://, http:// or ws:// and e.t.c.).
 func GetScheme(r *http.Request) string {
 	scheme := r.URL.Scheme
 
@@ -979,7 +999,8 @@ func (ctx *Context) Host() string {
 }
 
 // GetDomain resolves and returns the server's domain.
-func GetDomain(hostport string) string {
+// To customize its behavior, developers can modify this package-level function at initialization.
+var GetDomain = func(hostport string) string {
 	host := hostport
 	if tmp, _, err := net.SplitHostPort(hostport); err == nil {
 		host = tmp
@@ -991,6 +1012,10 @@ func GetDomain(hostport string) string {
 		// loopback.
 		return "localhost"
 	default:
+		if net.ParseIP(host) != nil { // if it's an IP, see #1945.
+			return host
+		}
+
 		if domain, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
 			host = domain
 		}
@@ -1088,10 +1113,11 @@ func (ctx *Context) FullRequestURI() string {
 // even if it's part of a private network.
 //
 // Look `Configuration.RemoteAddrHeaders`,
-//		`Configuration.RemoteAddrHeadersForce`,
-//      `Configuration.WithRemoteAddrHeader(...)`,
-//      `Configuration.WithoutRemoteAddrHeader(...)` and
-//      `Configuration.RemoteAddrPrivateSubnets` for more.
+//
+//	Configuration.RemoteAddrHeadersForce,
+//	Configuration.WithRemoteAddrHeader(...),
+//	Configuration.WithoutRemoteAddrHeader(...) and
+//	Configuration.RemoteAddrPrivateSubnetsW for more.
 func (ctx *Context) RemoteAddr() string {
 	if remoteHeaders := ctx.app.ConfigurationReadOnly().GetRemoteAddrHeaders(); len(remoteHeaders) > 0 {
 		privateSubnets := ctx.app.ConfigurationReadOnly().GetRemoteAddrPrivateSubnets()
@@ -1153,7 +1179,7 @@ func (ctx *Context) GetHeader(name string) string {
 // try to find another way of detecting the type(i.e, content type),
 // there are many blogs that describe these problems and provide different kind of solutions,
 // it's always depending on the application you're building,
-// this is the reason why this `IsAjax`` is simple enough for general purpose use.
+// this is the reason why this `IsAjax` is simple enough for general purpose use.
 //
 // Read more at: https://developer.mozilla.org/en-US/docs/AJAX
 // and https://xhr.spec.whatwg.org/
@@ -1437,7 +1463,7 @@ func (ctx *Context) GetContentLength() int64 {
 // StatusCode sets the status code header to the response.
 // Look .GetStatusCode & .FireStatusCode too.
 //
-// Remember, the last one before .Write matters except recorder and transactions.
+// Note that you must set status code before write response body (except when recorder is used).
 func (ctx *Context) StatusCode(statusCode int) {
 	ctx.writer.WriteHeader(statusCode)
 }
@@ -1493,7 +1519,7 @@ func (ctx *Context) URLParam(name string) string {
 // URLParamSlice a shortcut of ctx.Request().URL.Query()[name].
 // Like `URLParam` but it returns all values instead of a single string separated by commas.
 // Returns the values of a url query of the given "name" as string slice, e.g.
-// ?name=john&name=doe&name=kataras will return [ john doe kataras].
+// ?names=john&names=doe&names=kataras and ?names=john,doe,kataras will return [ john doe kataras].
 //
 // Note that, this method skips any empty entries.
 //
@@ -1505,10 +1531,20 @@ func (ctx *Context) URLParamSlice(name string) []string {
 		return values
 	}
 
-	normalizedValues := make([]string, 0, n)
+	var sep string
+	if sepPtr := ctx.app.ConfigurationReadOnly().GetURLParamSeparator(); sepPtr != nil {
+		sep = *sepPtr
+	}
 
+	normalizedValues := make([]string, 0, n)
 	for _, v := range values {
 		if v == "" {
+			continue
+		}
+
+		if sep != "" {
+			values := strings.Split(v, sep)
+			normalizedValues = append(normalizedValues, values...)
 			continue
 		}
 
@@ -1534,9 +1570,11 @@ func (ctx *Context) URLParamEscape(name string) string {
 // Example:
 //
 // n, err := context.URLParamInt("url_query_param_name")
-// if errors.Is(err, context.ErrNotFound) {
-// 	// [handle error...]
-// }
+//
+//	if errors.Is(err, context.ErrNotFound) {
+//		// [handle error...]
+//	}
+//
 // Another usage would be `err == context.ErrNotFound`
 // HOWEVER prefer use the new `errors.Is` as API details may change in the future.
 var ErrNotFound = errors.New("not found")
@@ -1649,6 +1687,17 @@ func (ctx *Context) URLParamFloat64Default(name string, def float64) float64 {
 // returns an error if parse failed.
 func (ctx *Context) URLParamBool(name string) (bool, error) {
 	return strconv.ParseBool(ctx.URLParam(name))
+}
+
+// URLParamBoolDefault returns the url query parameter as boolean value from a request,
+// if not found or parse failed then "def" is returned.
+func (ctx *Context) URLParamBoolDefault(name string, def bool) bool {
+	v, err := ctx.URLParamBool(name)
+	if err != nil {
+		return def
+	}
+
+	return v
 }
 
 // URLParams returns a map of URL Query parameters.
@@ -1783,16 +1832,17 @@ func GetForm(r *http.Request, postMaxMemory int64, resetBody bool) (form map[str
 		}
 	}
 
-	var bodyCopy []byte
-
 	if resetBody {
 		// on POST, PUT and PATCH it will read the form values from request body otherwise from URL queries.
 		if m := r.Method; m == "POST" || m == "PUT" || m == "PATCH" {
-			bodyCopy, _ = GetBody(r, resetBody)
-			if len(bodyCopy) == 0 {
+			body, restoreBody, err := GetBody(r, resetBody)
+			if err != nil {
 				return nil, false
 			}
-			// r.Body = ioutil.NopCloser(io.TeeReader(r.Body, buf))
+			setBody(r, body)    // so the ctx.request.Body works
+			defer restoreBody() // so the next GetForm calls work.
+
+			// r.Body = io.NopCloser(io.TeeReader(r.Body, buf))
 		} else {
 			resetBody = false
 		}
@@ -1803,9 +1853,9 @@ func GetForm(r *http.Request, postMaxMemory int64, resetBody bool) (form map[str
 	// After one call to ParseMultipartForm or ParseForm,
 	// subsequent calls have no effect, are idempotent.
 	err := r.ParseMultipartForm(postMaxMemory)
-	if resetBody {
-		r.Body = ioutil.NopCloser(bytes.NewBuffer(bodyCopy))
-	}
+	// if resetBody {
+	// 	r.Body = io.NopCloser(bytes.NewBuffer(bodyCopy))
+	// }
 	if err != nil && err != http.ErrNotMultipart {
 		return nil, false
 	}
@@ -1908,6 +1958,21 @@ func (ctx *Context) PostValueDefault(name string, def string) string {
 	return values[len(values)-1]
 }
 
+// PostValueString same as `PostValue` method but it reports
+// an error if the value with key equals to "name" does not exist.
+func (ctx *Context) PostValueString(name string) (string, error) {
+	values, err := ctx.PostValues(name)
+	if err != nil {
+		return "", err
+	}
+
+	if len(values) == 0 { // just in case.
+		return "", ErrEmptyForm
+	}
+
+	return values[len(values)-1], nil
+}
+
 // PostValue returns the last parsed form data from POST, PATCH,
 // or PUT body parameters based on a "name".
 //
@@ -1922,97 +1987,341 @@ func (ctx *Context) PostValueTrim(name string) string {
 	return strings.TrimSpace(ctx.PostValue(name))
 }
 
-// PostValueInt returns the last parsed form data from POST, PATCH,
-// or PUT body parameters based on a "name", as int.
+// PostValueUint returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as unassigned number.
+//
+// See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
+func (ctx *Context) PostValueUint(name string) (uint, error) {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
+		return 0, err
+	}
+
+	return strParseUint(value)
+}
+
+// PostValueUint returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as unassigned number.
+//
+// See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
+func (ctx *Context) PostValueUint8(name string) (uint8, error) {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
+		return 0, err
+	}
+
+	return strParseUint8(value)
+}
+
+// PostValueUint returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as unassigned number.
+//
+// See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
+func (ctx *Context) PostValueUint16(name string) (uint16, error) {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
+		return 0, err
+	}
+
+	return strParseUint16(value)
+}
+
+// PostValueUint returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as unassigned number.
+//
+// See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
+func (ctx *Context) PostValueUint32(name string) (uint32, error) {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
+		return 0, err
+	}
+
+	return strParseUint32(value)
+}
+
+// PostValueUint returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as unassigned number.
+//
+// See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
+func (ctx *Context) PostValueUint64(name string) (uint64, error) {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
+		return 0, err
+	}
+
+	return strParseUint64(value)
+}
+
+// PostValueInt returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as signed number.
 //
 // See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
 func (ctx *Context) PostValueInt(name string) (int, error) {
-	values, err := ctx.PostValues(name)
-	if err != nil || len(values) == 0 {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
 		return 0, err
 	}
 
-	return strconv.Atoi(values[len(values)-1])
+	return strParseInt(value)
 }
 
-// PostValueIntDefault returns the last parsed form data from POST, PATCH,
-// or PUT body parameters based on a "name", as int.
-//
-// If not found or parse errors returns the "def".
+// PostValueIntDefault same as PostValueInt but if errored it returns
+// the given "def" default value.
 func (ctx *Context) PostValueIntDefault(name string, def int) int {
-	if v, err := ctx.PostValueInt(name); err == nil {
-		return v
+	value, err := ctx.PostValueInt(name)
+	if err != nil {
+		return def
 	}
 
-	return def
+	return value
 }
 
-// PostValueInt64 returns the last parsed form data from POST, PATCH,
-// or PUT body parameters based on a "name", as float64.
+// PostValueInt8 returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as int8.
+//
+// See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
+func (ctx *Context) PostValueInt8(name string) (int8, error) {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
+		return 0, err
+	}
+
+	return strParseInt8(value)
+}
+
+// PostValueInt8Default same as PostValueInt8 but if errored it returns
+// the given "def" default value.
+func (ctx *Context) PostValueInt8Default(name string, def int8) int8 {
+	value, err := ctx.PostValueInt8(name)
+	if err != nil {
+		return def
+	}
+
+	return value
+}
+
+// PostValueInt16 returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as int16.
+//
+// See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
+func (ctx *Context) PostValueInt16(name string) (int16, error) {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
+		return 0, err
+	}
+
+	return strParseInt16(value)
+}
+
+// PostValueInt16Default same as PostValueInt16 but if errored it returns
+// the given "def" default value.
+func (ctx *Context) PostValueInt16Default(name string, def int16) int16 {
+	value, err := ctx.PostValueInt16(name)
+	if err != nil {
+		return def
+	}
+
+	return value
+}
+
+// PostValueInt32 returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as int32.
+//
+// See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
+func (ctx *Context) PostValueInt32(name string) (int32, error) {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
+		return 0, err
+	}
+
+	return strParseInt32(value)
+}
+
+// PostValueInt32Default same as PostValueInt32 but if errored it returns
+// the given "def" default value.
+func (ctx *Context) PostValueInt32Default(name string, def int32) int32 {
+	value, err := ctx.PostValueInt32(name)
+	if err != nil {
+		return def
+	}
+
+	return value
+}
+
+// PostValueInt64 returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as int64.
 //
 // See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
 func (ctx *Context) PostValueInt64(name string) (int64, error) {
-	values, err := ctx.PostValues(name)
-	if err != nil || len(values) == 0 {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
 		return 0, err
 	}
 
-	return strconv.ParseInt(values[len(values)-1], 10, 64)
+	return strParseInt64(value)
 }
 
-// PostValueInt64Default returns the last parsed form data from POST, PATCH,
-// or PUT body parameters based on a "name", as int64.
-//
-// If not found or parse errors returns the "def".
+// PostValueInt64Default same as PostValueInt64 but if errored it returns
+// the given "def" default value.
 func (ctx *Context) PostValueInt64Default(name string, def int64) int64 {
-	if v, err := ctx.PostValueInt64(name); err == nil {
-		return v
+	value, err := ctx.PostValueInt64(name)
+	if err != nil {
+		return def
 	}
 
-	return def
+	return value
 }
 
-// PostValueFloat64 returns the last parsed form data from POST, PATCH,
-// or PUT body parameters based on a "name", as float64.
+// PostValueFloat32 returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as float32.
+//
+// See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
+func (ctx *Context) PostValueFloat32(name string) (float32, error) {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
+		return 0, err
+	}
+
+	return strParseFloat32(value)
+}
+
+// PostValueFloat32Default same as PostValueFloat32 but if errored it returns
+// the given "def" default value.
+func (ctx *Context) PostValueFloat32Default(name string, def float32) float32 {
+	value, err := ctx.PostValueFloat32(name)
+	if err != nil {
+		return def
+	}
+
+	return value
+}
+
+// PostValueFloat64 returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as float64.
 //
 // See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
 func (ctx *Context) PostValueFloat64(name string) (float64, error) {
-	values, err := ctx.PostValues(name)
-	if err != nil || len(values) == 0 {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
 		return 0, err
 	}
 
-	return strconv.ParseFloat(values[len(values)-1], 64)
+	return strParseFloat64(value)
 }
 
-// PostValueFloat64Default returns the last parsed form data from POST, PATCH,
-// or PUT body parameters based on a "name", as float64.
-//
-// If not found or parse errors returns the "def".
+// PostValueFloat64Default same as PostValueFloat64 but if errored it returns
+// the given "def" default value.
 func (ctx *Context) PostValueFloat64Default(name string, def float64) float64 {
-	if v, err := ctx.PostValueFloat64(name); err == nil {
-		return v
+	value, err := ctx.PostValueFloat64(name)
+	if err != nil {
+		return def
 	}
 
-	return def
+	return value
 }
 
-// PostValueBool returns the last parsed form data from POST, PATCH,
-// or PUT body parameters based on a "name", as bool.
-// If more than one value was binded to "name", then it returns the last one.
+// PostValueComplex64 returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as complex64.
+//
+// See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
+func (ctx *Context) PostValueComplex64(name string) (complex64, error) {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
+		return 0, err
+	}
+
+	return strParseComplex64(value)
+}
+
+// PostValueComplex64Default same as PostValueComplex64 but if errored it returns
+// the given "def" default value.
+func (ctx *Context) PostValueComplex64Default(name string, def complex64) complex64 {
+	value, err := ctx.PostValueComplex64(name)
+	if err != nil {
+		return def
+	}
+
+	return value
+}
+
+// PostValueComplex128 returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as complex128.
+//
+// See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
+func (ctx *Context) PostValueComplex128(name string) (complex128, error) {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
+		return 0, err
+	}
+
+	return strParseComplex128(value)
+}
+
+// PostValueComplex128Default same as PostValueComplex128 but if errored it returns
+// the given "def" default value.
+func (ctx *Context) PostValueComplex128Default(name string, def complex128) complex128 {
+	value, err := ctx.PostValueComplex128(name)
+	if err != nil {
+		return def
+	}
+
+	return value
+}
+
+// PostValueBool returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as bool.
 //
 // See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
 func (ctx *Context) PostValueBool(name string) (bool, error) {
-	values, err := ctx.PostValues(name)
-	if err != nil || len(values) == 0 {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
 		return false, err
 	}
 
-	return strconv.ParseBool(values[len(values)-1]) // values cannot be empty on this state.
+	return strParseBool(value)
+}
+
+// PostValueWeekday returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as time.Weekday.
+//
+// See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
+func (ctx *Context) PostValueWeekday(name string) (time.Weekday, error) {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
+		return 0, err
+	}
+
+	return strParseWeekday(value)
+}
+
+// PostValueTime returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as time.Time with the given "layout".
+//
+// See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
+func (ctx *Context) PostValueTime(layout, name string) (time.Time, error) {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return strParseTime(layout, value)
+}
+
+// PostValueSimpleDate returns the last parsed form data matches the given "name" key
+// from POST, PATCH, or PUT body request parameters as time.Time with "2006/01/02"
+// or "2006-01-02" time layout.
+//
+// See ErrEmptyForm, ErrNotFound and ErrEmptyFormField respectfully.
+func (ctx *Context) PostValueSimpleDate(name string) (time.Time, error) {
+	value, err := ctx.PostValueString(name)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return strParseSimpleDate(value)
 }
 
 // FormFile returns the first uploaded file that received from the client.
-//
 //
 // The default form's memory maximum size is 32MB, it can be changed by the
 // `iris#WithPostMaxMemory` configurator at main configuration passed on `app.Run`'s second argument.
@@ -2158,6 +2467,15 @@ func (ctx *Context) AbsoluteURI(s string) string {
 		return ""
 	}
 
+	userInfo := ""
+	if s[0] == '@' {
+		endUserInfoIdx := strings.IndexByte(s, '/')
+		if endUserInfoIdx > 0 && len(s) > endUserInfoIdx {
+			userInfo = s[1:endUserInfoIdx] + "@"
+			s = s[endUserInfoIdx:]
+		}
+	}
+
 	if s[0] == '/' {
 		scheme := ctx.request.URL.Scheme
 		if scheme == "" {
@@ -2170,7 +2488,7 @@ func (ctx *Context) AbsoluteURI(s string) string {
 
 		host := ctx.Host()
 
-		return scheme + "//" + host + path.Clean(s)
+		return scheme + "//" + userInfo + host + path.Clean(s)
 	}
 
 	if u, err := url.Parse(s); err == nil {
@@ -2247,20 +2565,28 @@ func (ctx *Context) SetMaxRequestBodySize(limitOverBytes int64) {
 	ctx.request.Body = http.MaxBytesReader(ctx.writer, ctx.request.Body, limitOverBytes)
 }
 
+var emptyFunc = func() {}
+
 // GetBody reads and returns the request body.
-func GetBody(r *http.Request, resetBody bool) ([]byte, error) {
-	data, err := ioutil.ReadAll(r.Body)
+func GetBody(r *http.Request, resetBody bool) ([]byte, func(), error) {
+	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if resetBody {
 		// * remember, Request.Body has no Bytes(), we have to consume them first
 		// and after re-set them to the body, this is the only solution.
-		r.Body = ioutil.NopCloser(bytes.NewBuffer(data))
+		return data, func() {
+			setBody(r, data)
+		}, nil
 	}
 
-	return data, nil
+	return data, emptyFunc, nil
+}
+
+func setBody(r *http.Request, data []byte) {
+	r.Body = io.NopCloser(bytes.NewBuffer(data))
 }
 
 const disableRequestBodyConsumptionContextKey = "iris.request.body.record"
@@ -2274,8 +2600,12 @@ func (ctx *Context) RecordRequestBody(b bool) {
 
 // IsRecordingBody reports whether the request body can be readen multiple times.
 func (ctx *Context) IsRecordingBody() bool {
-	return ctx.values.GetBoolDefault(disableRequestBodyConsumptionContextKey,
-		ctx.app.ConfigurationReadOnly().GetDisableBodyConsumptionOnUnmarshal())
+	if ctx.app.ConfigurationReadOnly().GetDisableBodyConsumptionOnUnmarshal() {
+		return true
+	}
+
+	value, _ := ctx.values.GetBool(disableRequestBodyConsumptionContextKey)
+	return value
 }
 
 // GetBody reads and returns the request body.
@@ -2285,7 +2615,12 @@ func (ctx *Context) IsRecordingBody() bool {
 //
 // However, whenever you can use the `ctx.Request().Body` instead.
 func (ctx *Context) GetBody() ([]byte, error) {
-	return GetBody(ctx.request, ctx.IsRecordingBody())
+	body, release, err := GetBody(ctx.request, ctx.IsRecordingBody())
+	if err != nil {
+		return nil, err
+	}
+	release()
+	return body, nil
 }
 
 // Validator is the validator for request body on Context methods such as
@@ -2339,10 +2674,6 @@ func (ctx *Context) UnmarshalBody(outPtr interface{}, unmarshaler Unmarshaler) e
 	return ctx.app.Validate(outPtr)
 }
 
-func (ctx *Context) shouldOptimize() bool {
-	return ctx.app.ConfigurationReadOnly().GetEnableOptimizations()
-}
-
 // JSONReader holds the JSON decode options of the `Context.ReadJSON, ReadBody` methods.
 type JSONReader struct { // Note(@kataras): struct instead of optional funcs to keep consistently with the encoder options.
 	// DisallowUnknownFields causes the json decoder to return an error when the destination
@@ -2367,122 +2698,44 @@ type JSONReader struct { // Note(@kataras): struct instead of optional funcs to 
 	//  {"username": "makis"}
 	//  {"username": "george"}
 	ArrayStream bool
-
-	// Optional context cancelation of decoder when Optimize field is enabled.
-	// On ReadJSON method this is automatically binded to the request context.
-	Context stdContext.Context
 }
 
-type internalJSONDecoder interface {
-	Token() (json.Token, error) // gojson.Token is an alias of this, so we are ok.
-	More() bool
-	DisallowUnknownFields()
-}
+var ReadJSON = func(ctx *Context, outPtr interface{}, opts ...JSONReader) error {
+	var body io.Reader
 
-type unmarshalerContext interface {
-	// UnmarshalJSON unmarshal json with context support.
-	UnmarshalJSON(stdContext.Context, []byte) error //lint:ignore stdmethods external pkg.
-}
-
-func wrapDecodeFunc(decodeFunc func(interface{}) error) DecodeFunc {
-	return func(_ stdContext.Context, outPtr interface{}) error {
-		return decodeFunc(outPtr)
-	}
-}
-
-func (options JSONReader) unmarshal(ctx stdContext.Context, body []byte, outPtr interface{}) error {
-	if options.Optimize {
-		if outPtr != nil {
-			if _, supportsContext := outPtr.(unmarshalerContext); !supportsContext {
-				return gojson.Unmarshal(body, outPtr)
-			}
+	if ctx.IsRecordingBody() {
+		data, err := io.ReadAll(ctx.request.Body)
+		if err != nil {
+			return err
 		}
-
-		return gojson.UnmarshalContext(ctx, body, outPtr)
-	}
-
-	return json.Unmarshal(body, outPtr)
-}
-
-func (options JSONReader) getDecoder(r io.Reader, outPtr interface{}) (internalJSONDecoder, DecodeFunc) {
-	var (
-		decoder    internalJSONDecoder
-		decodeFunc DecodeFunc
-	)
-
-	if options.Optimize {
-		dec := gojson.NewDecoder(r)
-
-		if outPtr != nil {
-			// If a custom type does not implement the unnmarshal json with context interface
-			// that is REQUIRED by the gojson, then fallback to the normal gojson decode without context support,
-			// so we protect compatibility against existing objects.
-			if _, supportsContext := outPtr.(unmarshalerContext); supportsContext {
-				decodeFunc = dec.DecodeContext
-			} else {
-				decodeFunc = wrapDecodeFunc(dec.Decode)
-			}
-		} else {
-			decodeFunc = dec.DecodeContext
-		}
-
-		decoder = dec
+		setBody(ctx.request, data)
+		body = bytes.NewReader(data)
 	} else {
-		dec := json.NewDecoder(r)
-		decodeFunc = wrapDecodeFunc(dec.Decode)
-		decoder = dec
+		body = ctx.request.Body
 	}
 
-	if options.DisallowUnknownFields {
-		decoder.DisallowUnknownFields()
+	decoder := json.NewDecoder(body)
+	// decoder := gojson.NewDecoder(ctx.Request().Body)
+	if len(opts) > 0 {
+		options := opts[0]
+
+		if options.DisallowUnknownFields {
+			decoder.DisallowUnknownFields()
+		}
 	}
 
-	return decoder, decodeFunc
+	if err := decoder.Decode(&outPtr); err != nil {
+		return err
+	}
+
+	return ctx.app.Validate(outPtr)
 }
 
 // ReadJSON reads JSON from request's body and binds it to a value of any json-valid type.
 //
 // Example: https://github.com/kataras/iris/blob/master/_examples/request-body/read-json/main.go
 func (ctx *Context) ReadJSON(outPtr interface{}, opts ...JSONReader) error {
-	var options JSONReader
-	options.Optimize = ctx.shouldOptimize()
-
-	if len(opts) > 0 {
-		options = opts[0]
-	}
-
-	if ctx.IsRecordingBody() {
-		body, err := GetBody(ctx.request, true)
-		if err != nil {
-			return err
-		}
-
-		err = options.unmarshal(ctx.request.Context(), body, outPtr)
-		if err != nil {
-			return err
-		}
-	} else {
-		_, decodeFunc := options.getDecoder(ctx.request.Body, outPtr)
-		err := decodeFunc(ctx.request.Context(), outPtr)
-		if err != nil {
-			return err
-		}
-	}
-
-	return ctx.app.Validate(outPtr)
-
-	/*
-		b, err := ctx.GetBody()
-		if err != nil {
-			return err
-		}
-
-		if options.Optimize {
-			return gojson.UnmarshalContext(ctx.request.Context(), b, outPtr)
-		} else {
-			return json.Unmarshal(b, outPtr)
-		}
-	*/
+	return ReadJSON(ctx, outPtr, opts...)
 }
 
 // ReadJSONStream is an alternative of ReadJSON which can reduce the memory load
@@ -2496,21 +2749,16 @@ func (ctx *Context) ReadJSON(outPtr interface{}, opts ...JSONReader) error {
 //
 // Example: https://github.com/kataras/iris/blob/master/_examples/request-body/read-json-stream/main.go
 func (ctx *Context) ReadJSONStream(onDecode func(DecodeFunc) error, opts ...JSONReader) error {
-	var options JSONReader
-	if len(opts) > 0 {
-		options = opts[0]
-	}
+	decoder := json.NewDecoder(ctx.request.Body)
 
-	decoder, decodeFunc := options.getDecoder(ctx.request.Body, nil)
-
-	if options.ArrayStream {
+	if len(opts) > 0 && opts[0].ArrayStream {
 		_, err := decoder.Token() // read open bracket.
 		if err != nil {
 			return err
 		}
 
 		for decoder.More() { // hile the array contains values.
-			if err = onDecode(decodeFunc); err != nil {
+			if err = onDecode(decoder.Decode); err != nil {
 				return err
 			}
 		}
@@ -2521,7 +2769,7 @@ func (ctx *Context) ReadJSONStream(onDecode func(DecodeFunc) error, opts ...JSON
 
 	// while the array contains values
 	for decoder.More() {
-		if err := onDecode(decodeFunc); err != nil {
+		if err := onDecode(decoder.Decode); err != nil {
 			return err
 		}
 	}
@@ -2572,6 +2820,24 @@ var (
 	// A shortcut for the `schema#IsErrPath`.
 	IsErrPath = schema.IsErrPath
 
+	// IsErrPathCRSFToken reports whether the given "err" is caused
+	// by unknown key error on "csrf.token". See `context#ReadForm` for more.
+	IsErrPathCRSFToken = func(err error) bool {
+		if err == nil || CSRFTokenFormKey == "" {
+			return false
+		}
+
+		if m, ok := err.(schema.MultiError); ok {
+			if csrfErr, hasCSRFToken := m[CSRFTokenFormKey]; hasCSRFToken {
+				_, is := csrfErr.(schema.UnknownKeyError)
+				return is
+
+			}
+		}
+
+		return false
+	}
+
 	// ErrEmptyForm is returned by
 	// - `context#ReadForm`
 	// - `context#ReadQuery`
@@ -2614,6 +2880,11 @@ var (
 	}
 )
 
+// CSRFTokenFormKey the CSRF token key of the form data.
+//
+// See ReadForm method for more.
+const CSRFTokenFormKey = "csrf.token"
+
 // ReadForm binds the request body of a form to the "formObject".
 // It supports any kind of type, including custom structs.
 // It will return nothing if request data are empty.
@@ -2624,6 +2895,9 @@ var (
 //
 // If a client sent an unknown field, this method will return an error,
 // in order to ignore that error use the `err != nil && !iris.IsErrPath(err)`.
+//
+// As of 15 Aug 2022, ReadForm does not return an error over unknown CSRF token form key,
+// to change this behavior globally, set the `context.CSRFTokenFormKey` to an empty value.
 //
 // Example: https://github.com/kataras/iris/blob/master/_examples/request-body/read-form/main.go
 func (ctx *Context) ReadForm(formObject interface{}) error {
@@ -2636,11 +2910,148 @@ func (ctx *Context) ReadForm(formObject interface{}) error {
 	}
 
 	err := schema.DecodeForm(values, formObject)
-	if err != nil {
+	if err != nil && !IsErrPathCRSFToken(err) {
 		return err
 	}
 
 	return ctx.app.Validate(formObject)
+}
+
+type (
+	// MultipartRelated is the result of the context.ReadMultipartRelated method.
+	MultipartRelated struct {
+		// ContentIDs keeps an ordered list of all the
+		// content-ids of the multipart related request.
+		ContentIDs []string
+		// Contents keeps each part's information by Content-ID.
+		// Contents holds each of the multipart/related part's data.
+		Contents map[string]MultipartRelatedContent
+	}
+
+	// MultipartRelatedContent holds a multipart/related part's id, header and body.
+	MultipartRelatedContent struct {
+		// ID holds the Content-ID.
+		ID string
+		// Headers holds the part's request headers.
+		Headers map[string][]string
+		// Body holds the part's body.
+		Body []byte
+	}
+)
+
+// ReadMultipartRelated returns a structure which contain
+// information about each part (id, headers, body).
+//
+// Read more at: https://www.ietf.org/rfc/rfc2387.txt.
+//
+// Example request (2387/5.2 Text/X-Okie):
+// Content-Type: Multipart/Related; boundary=example-2;
+// start="<950118.AEBH@XIson.com>"
+// type="Text/x-Okie"
+//
+// --example-2
+// Content-Type: Text/x-Okie; charset=iso-8859-1;
+// declaration="<950118.AEB0@XIson.com>"
+// Content-ID: <950118.AEBH@XIson.com>
+// Content-Description: Document
+//
+// {doc}
+// This picture was taken by an automatic camera mounted ...
+// {image file=cid:950118.AECB@XIson.com}
+// {para}
+// Now this is an enlargement of the area ...
+// {image file=cid:950118:AFDH@XIson.com}
+// {/doc}
+// --example-2
+// Content-Type: image/jpeg
+// Content-ID: <950118.AFDH@XIson.com>
+// Content-Transfer-Encoding: BASE64
+// Content-Description: Picture A
+//
+// [encoded jpeg image]
+// --example-2
+// Content-Type: image/jpeg
+// Content-ID: <950118.AECB@XIson.com>
+// Content-Transfer-Encoding: BASE64
+// Content-Description: Picture B
+//
+// [encoded jpeg image]
+// --example-2--
+func (ctx *Context) ReadMultipartRelated() (MultipartRelated, error) {
+	contentType, params, err := mime.ParseMediaType(ctx.GetHeader(ContentTypeHeaderKey))
+	if err != nil {
+		return MultipartRelated{}, err
+	}
+
+	if !strings.HasPrefix(contentType, ContentMultipartRelatedHeaderValue) {
+		return MultipartRelated{}, ErrEmptyForm
+	}
+
+	var (
+		contentIDs []string
+		contents   = make(map[string]MultipartRelatedContent)
+	)
+
+	if ctx.IsRecordingBody() {
+		// * remember, Request.Body has no Bytes(), we have to consume them first
+		// and after re-set them to the body, this is the only solution.
+		body, restoreBody, err := GetBody(ctx.request, true)
+		if err != nil {
+			return MultipartRelated{}, fmt.Errorf("multipart related: body copy because of iris.Configuration.DisableBodyConsumptionOnUnmarshal: %w", err)
+		}
+		setBody(ctx.request, body) // so the ctx.request.Body works
+		defer restoreBody()        // so the next ctx.GetBody calls work.
+	}
+
+	multipartReader := multipart.NewReader(ctx.request.Body, params["boundary"])
+	for {
+		part, err := multipartReader.NextPart()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+
+			return MultipartRelated{}, fmt.Errorf("multipart related: next part: %w", err)
+		}
+		defer part.Close()
+
+		b, err := io.ReadAll(part)
+		if err != nil {
+			return MultipartRelated{}, fmt.Errorf("multipart related: next part: read: %w", err)
+		}
+
+		contentID := part.Header.Get("Content-ID")
+		contentIDs = append(contentIDs, contentID)
+		contents[contentID] = MultipartRelatedContent{ // replace if same Content-ID appears, which it shouldn't.
+			ID:      contentID,
+			Headers: http.Header(part.Header),
+			Body:    b,
+		}
+	}
+
+	if len(contents) != len(contentIDs) {
+		contentIDs = distinctStrings(contentIDs)
+	}
+
+	result := MultipartRelated{
+		ContentIDs: contentIDs,
+		Contents:   contents,
+	}
+	return result, nil
+}
+
+func distinctStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+
+	for _, val := range values {
+		if _, ok := seen[val]; !ok {
+			seen[val] = struct{}{}
+			result = append(result, val)
+		}
+	}
+
+	return result
 }
 
 // ReadQuery binds URL Query to "ptr". The struct field tag is "url".
@@ -2818,6 +3229,8 @@ func (ctx *Context) ReadBody(ptr interface{}) error {
 		return ctx.ReadYAML(ptr)
 	case ContentFormHeaderValue, ContentFormMultipartHeaderValue:
 		return ctx.ReadForm(ptr)
+	case ContentMultipartRelatedHeaderValue:
+		return fmt.Errorf("context: read body: cannot bind multipart/related: use ReadMultipartRelated instead")
 	case ContentJSONHeaderValue:
 		return ctx.ReadJSON(ptr)
 	case ContentProtobufHeaderValue:
@@ -2863,6 +3276,9 @@ func (ctx *Context) ReadBody(ptr interface{}) error {
 // writing the response. However, such behavior may not be supported
 // by all HTTP/2 clients. Handlers should read before writing if
 // possible to maximize compatibility.
+//
+// It reports any write errors back to the caller, Application.SetContentErrorHandler does NOT apply here
+// as this is a lower-level method which must be remain as it is.
 func (ctx *Context) Write(rawBody []byte) (int, error) {
 	return ctx.writer.Write(rawBody)
 }
@@ -2960,13 +3376,14 @@ func (ctx *Context) SetLastModified(modtime time.Time) {
 // that has to perform one or more client side preconditions before the actual check, e.g. `CheckIfModifiedSince`.
 // Usage:
 // ok, err := context.CheckIfModifiedSince(modTime)
-// if err != nil {
-//    if errors.Is(err, context.ErrPreconditionFailed) {
-//         [handle missing client conditions,such as not valid request method...]
-//     }else {
-//         [the error is probably a time parse error...]
-//    }
-// }
+//
+//	if err != nil {
+//	   if errors.Is(err, context.ErrPreconditionFailed) {
+//	        [handle missing client conditions,such as not valid request method...]
+//	    }else {
+//	        [the error is probably a time parse error...]
+//	   }
+//	}
 var ErrPreconditionFailed = errors.New("precondition failed")
 
 // CheckIfModifiedSince checks if the response is modified since the "modtime".
@@ -3043,9 +3460,9 @@ func (ctx *Context) WriteWithExpiration(body []byte, modtime time.Time) (int, er
 //
 // This function may be used in the following cases:
 //
-//     * if response body is too big (more than iris.LimitRequestBodySize(if set)).
-//     * if response body is streamed from slow external sources.
-//     * if response body must be streamed to the client in chunks.
+//   - if response body is too big (more than iris.LimitRequestBodySize(if set)).
+//   - if response body is streamed from slow external sources.
+//   - if response body must be streamed to the client in chunks.
 //     (aka `http server push`).
 func (ctx *Context) StreamWriter(writer func(w io.Writer) error) error {
 	cancelCtx := ctx.Request().Context()
@@ -3098,10 +3515,12 @@ func (ctx *Context) ClientSupportsEncoding(encodings ...string) bool {
 // will change the response writer to a compress writer instead.
 // All future write and rich write methods will respect this option.
 // Usage:
-// app.Use(func(ctx iris.Context){
-// 	err := ctx.CompressWriter(true)
-// 	ctx.Next()
-// })
+//
+//	app.Use(func(ctx iris.Context){
+//		err := ctx.CompressWriter(true)
+//		ctx.Next()
+//	})
+//
 // The recommendation is to compress data as much as possible and therefore to use this field,
 // but some types of resources, such as jpeg images, are already compressed.
 // Sometimes, using additional compression doesn't reduce payload size and
@@ -3161,15 +3580,18 @@ func (ctx *Context) CompressWriter(enable bool) error {
 // All future calls of `ctx.GetBody/ReadXXX/UnmarshalBody` methods will respect this option.
 //
 // Usage:
-// app.Use(func(ctx iris.Context){
-// 	err := ctx.CompressReader(true)
-// 	ctx.Next()
-// })
+//
+//	app.Use(func(ctx iris.Context){
+//		err := ctx.CompressReader(true)
+//		ctx.Next()
+//	})
+//
 // More:
-// if cr, ok := ctx.Request().Body.(*CompressReader); ok {
-// 	cr.Src // the original request body
-//  cr.Encoding // the compression algorithm.
-// }
+//
+//	if cr, ok := ctx.Request().Body.(*CompressReader); ok {
+//		cr.Src // the original request body
+//	 cr.Encoding // the compression algorithm.
+//	}
 //
 // It returns `ErrRequestNotCompressed` if client's request data are not compressed
 // (or empty)
@@ -3262,9 +3684,7 @@ func (ctx *Context) ViewData(key string, value interface{}) {
 		return
 	}
 
-	if data, ok := v.(map[string]interface{}); ok {
-		data[key] = value
-	} else if data, ok := v.(Map); ok {
+	if data, ok := v.(Map); ok {
 		data[key] = value
 	}
 }
@@ -3279,30 +3699,19 @@ func (ctx *Context) ViewData(key string, value interface{}) {
 // Similarly to `viewData := ctx.Values().Get("iris.view.data")` or
 // `viewData := ctx.Values().Get(ctx.Application().ConfigurationReadOnly().GetViewDataContextKey())`.
 func (ctx *Context) GetViewData() map[string]interface{} {
-	viewDataContextKey := ctx.app.ConfigurationReadOnly().GetViewDataContextKey()
-	v := ctx.values.Get(viewDataContextKey)
+	if v := ctx.values.Get(ctx.app.ConfigurationReadOnly().GetViewDataContextKey()); v != nil {
+		// if pure map[string]interface{}
+		if viewData, ok := v.(Map); ok {
+			return viewData
+		}
+
+		// if struct, convert it to map[string]interface{}
+		if structs.IsStruct(v) {
+			return structs.Map(v)
+		}
+	}
 
 	// if no values found, then return nil
-	if v == nil {
-		return nil
-	}
-
-	// if struct, convert it to map[string]interface{}
-	if structs.IsStruct(v) {
-		return structs.Map(v)
-	}
-
-	// if pure map[string]interface{}
-	if viewData, ok := v.(map[string]interface{}); ok {
-		return viewData
-	}
-
-	// if context#Map
-	if viewData, ok := v.(Map); ok {
-		return viewData
-	}
-
-	// if failure, then return nil
 	return nil
 }
 
@@ -3416,15 +3825,16 @@ func (ctx *Context) fireFallbackViewOnce(err ErrViewNotExist) error {
 // is responsible to handle the error or render a different view.
 //
 // Usage:
-//  FallbackView(iris.FallbackView("fallback.html"))
-//  FallbackView(iris.FallbackViewLayout("layouts/fallback.html"))
-//  OR
-//  FallbackView(iris.FallbackViewFunc(ctx iris.Context, err iris.ErrViewNotExist) error {
-//    err.Name is the previous template name.
-//    err.IsLayout reports whether the failure came from the layout template.
-//    err.Data is the template data provided to the previous View call.
-//    [...custom logic e.g. ctx.View("fallback", err.Data)]
-//  })
+//
+//	FallbackView(iris.FallbackView("fallback.html"))
+//	FallbackView(iris.FallbackViewLayout("layouts/fallback.html"))
+//	OR
+//	FallbackView(iris.FallbackViewFunc(ctx iris.Context, err iris.ErrViewNotExist) error {
+//	  err.Name is the previous template name.
+//	  err.IsLayout reports whether the failure came from the layout template.
+//	  err.Data is the template data provided to the previous View call.
+//	  [...custom logic e.g. ctx.View("fallback", err.Data)]
+//	})
 func (ctx *Context) FallbackView(providers ...FallbackViewProvider) {
 	key := ctx.app.ConfigurationReadOnly().GetFallbackViewContextKey()
 	if key == "" {
@@ -3463,15 +3873,18 @@ func (ctx *Context) View(filename string, optionalViewModel ...interface{}) erro
 	ctx.ContentType(ContentHTMLHeaderValue)
 
 	err := ctx.renderView(filename, optionalViewModel...)
-	if errNotExists, ok := err.(ErrViewNotExist); ok {
-		err = ctx.fireFallbackViewOnce(errNotExists)
+	if err != nil {
+		if errNotExists, ok := err.(ErrViewNotExist); ok {
+			err = ctx.fireFallbackViewOnce(errNotExists)
+		}
 	}
 
 	if err != nil {
-		if ctx.app.Logger().Level == golog.DebugLevel {
+		if ctx.IsDebug() {
 			// send the error back to the client, when debug mode.
 			ctx.StopWithError(http.StatusInternalServerError, err)
 		} else {
+			ctx.SetErrPrivate(err)
 			ctx.StopWithStatus(http.StatusInternalServerError)
 		}
 	}
@@ -3541,6 +3954,8 @@ const (
 	ContentFormHeaderValue = "application/x-www-form-urlencoded"
 	// ContentFormMultipartHeaderValue header value for post multipart form data.
 	ContentFormMultipartHeaderValue = "multipart/form-data"
+	// ContentMultipartRelatedHeaderValue header value for multipart related data.
+	ContentMultipartRelatedHeaderValue = "multipart/related"
 	// ContentGRPCHeaderValue Content-Type header value for gRPC.
 	ContentGRPCHeaderValue = "application/grpc"
 )
@@ -3568,26 +3983,28 @@ type ProtoMarshalOptions = protojson.MarshalOptions
 
 // JSON contains the options for the JSON (Context's) Renderer.
 type JSON struct {
-	// http-specific
-	StreamingJSON bool
 	// content-specific
-	UnescapeHTML bool
-	Indent       string
-	Prefix       string
-	ASCII        bool // if true writes with unicode to ASCII content.
-	Secure       bool // if true then it prepends a "while(1);" when Go slice (to JSON Array) value.
+	UnescapeHTML bool   `yaml:"UnescapeHTML"`
+	Indent       string `yaml:"Indent"`
+	Prefix       string `yaml:"Prefix"`
+	ASCII        bool   `yaml:"ASCII"`  // if true writes with unicode to ASCII content.
+	Secure       bool   `yaml:"Secure"` // if true then it prepends a "while(1);" when Go slice (to JSON Array) value.
 	// proto.Message specific marshal options.
-	Proto ProtoMarshalOptions
-
-	// Optional context cancelation of encoder when Iris optimizations field is enabled.
-	// On JSON method this is automatically binded to the request context.
-	Context stdContext.Context
+	Proto ProtoMarshalOptions `yaml:"ProtoMarshalOptions"`
+	// If true and json writing failed then the error handler is skipped
+	// and it just returns to the caller.
+	//
+	// See StopWithJSON and x/errors package.
+	OmitErrorHandler bool `yaml:"OmitErrorHandler"`
 }
+
+// DefaultJSONOptions is the optional settings that are being used
+// inside `Context.JSON`.
+var DefaultJSONOptions = JSON{}
 
 // IsDefault reports whether this JSON options structure holds the default values.
 func (j *JSON) IsDefault() bool {
-	return j.StreamingJSON == DefaultJSONOptions.StreamingJSON &&
-		j.UnescapeHTML == DefaultJSONOptions.UnescapeHTML &&
+	return j.UnescapeHTML == DefaultJSONOptions.UnescapeHTML &&
 		j.Indent == DefaultJSONOptions.Indent &&
 		j.Prefix == DefaultJSONOptions.Prefix &&
 		j.ASCII == DefaultJSONOptions.ASCII &&
@@ -3595,33 +4012,27 @@ func (j *JSON) IsDefault() bool {
 		j.Proto == DefaultJSONOptions.Proto
 }
 
-// GetContext returns the option's Context or the HTTP request's one.
-func (j *JSON) GetContext(ctx *Context) stdContext.Context {
-	if j.Context == nil {
-		return ctx.request.Context()
-	}
-
-	return j.Context
-}
-
 // JSONP contains the options for the JSONP (Context's) Renderer.
 type JSONP struct {
 	// content-specific
-	Indent   string
-	Callback string
+	Indent           string
+	Callback         string
+	OmitErrorHandler bool // See JSON.OmitErrorHandler.
 }
 
 // XML contains the options for the XML (Context's) Renderer.
 type XML struct {
 	// content-specific
-	Indent string
-	Prefix string
+	Indent           string
+	Prefix           string
+	OmitErrorHandler bool // See JSON.OmitErrorHandler.
 }
 
 // Markdown contains the options for the Markdown (Context's) Renderer.
 type Markdown struct {
 	// content-specific
-	Sanitize bool
+	Sanitize         bool
+	OmitErrorHandler bool // See JSON.OmitErrorHandler.
 }
 
 var (
@@ -3642,32 +4053,60 @@ var (
 	secureJSONPrefix = []byte("while(1);")
 )
 
-func handleJSONResponseValue(w io.Writer, v interface{}, options JSON) (bool, int, error) {
-	if m, ok := v.(proto.Message); ok {
-		result, err := options.Proto.Marshal(m)
-		if err != nil {
-			return true, 0, err
-		}
+func (ctx *Context) handleSpecialJSONResponseValue(v interface{}, options *JSON) (bool, int, error) {
+	if ctx.app.ConfigurationReadOnly().GetEnableProtoJSON() {
+		if m, ok := v.(proto.Message); ok {
+			protoJSON := ProtoMarshalOptions{}
+			if options != nil {
+				protoJSON = options.Proto
+			}
 
-		n, err := w.Write(result)
-		return true, n, err
+			result, err := protoJSON.Marshal(m)
+			if err != nil {
+				return true, 0, err
+			}
+
+			n, err := ctx.writer.Write(result)
+			return true, n, err
+		}
 	}
 
-	if easyObject, ok := v.(easyjson.Marshaler); ok {
-		jw := jwriter.Writer{NoEscapeHTML: !options.UnescapeHTML}
-		easyObject.MarshalEasyJSON(&jw)
-		n, err := jw.DumpTo(w)
-		return true, n, err
+	if ctx.app.ConfigurationReadOnly().GetEnableEasyJSON() {
+		if easyObject, ok := v.(easyjson.Marshaler); ok {
+			noEscapeHTML := false
+			if options != nil {
+				noEscapeHTML = !options.UnescapeHTML
+			}
+			jw := jwriter.Writer{NoEscapeHTML: noEscapeHTML}
+			easyObject.MarshalEasyJSON(&jw)
+
+			n, err := jw.DumpTo(ctx.writer)
+			return true, n, err
+		}
 	}
 
 	return false, 0, nil
 }
 
 // WriteJSON marshals the given interface object and writes the JSON response to the 'writer'.
-// Ignores StatusCode and StreamingJSON options.
-func WriteJSON(writer io.Writer, v interface{}, options JSON, shouldOptimize bool) (int, error) {
-	if handled, n, err := handleJSONResponseValue(writer, v, options); handled {
-		return n, err
+var WriteJSON = func(ctx *Context, v interface{}, options *JSON) error {
+	if !options.Secure && !options.ASCII && options.Prefix == "" {
+		// jsoniterConfig := jsoniter.Config{
+		// 	EscapeHTML:    !options.UnescapeHTML,
+		// 	IndentionStep: 4,
+		// }.Froze()
+		// enc := jsoniterConfig.NewEncoder(ctx.writer)
+		// err = enc.Encode(v)
+		//
+		// enc := gojson.NewEncoder(ctx.writer)
+		// enc.SetEscapeHTML(!options.UnescapeHTML)
+		// enc.SetIndent(options.Prefix, options.Indent)
+		// err = enc.EncodeContext(ctx, v)
+		enc := json.NewEncoder(ctx.writer)
+		enc.SetEscapeHTML(!options.UnescapeHTML)
+		enc.SetIndent(options.Prefix, options.Indent)
+
+		return enc.Encode(v)
 	}
 
 	var (
@@ -3675,34 +4114,15 @@ func WriteJSON(writer io.Writer, v interface{}, options JSON, shouldOptimize boo
 		err    error
 	)
 
-	if !shouldOptimize && options.Indent == "" {
-		options.Indent = "  "
-	}
-
 	if indent := options.Indent; indent != "" {
-		if shouldOptimize {
-			// result,err = jsoniter.ConfigCompatibleWithStandardLibrary.MarshalIndent
-			result, err = gojson.MarshalIndent(v, "", indent)
-		} else {
-			result, err = json.MarshalIndent(v, "", indent)
-		}
-
+		result, err = json.MarshalIndent(v, "", indent)
 		result = append(result, newLineB...)
 	} else {
-		if shouldOptimize {
-			// result, err =  jsoniter.ConfigCompatibleWithStandardLibrary.Marshal
-			if options.Context != nil {
-				result, err = gojson.MarshalContext(options.Context, v)
-			} else {
-				result, err = gojson.Marshal(v)
-			}
-		} else {
-			result, err = json.Marshal(v)
-		}
+		result, err = json.Marshal(v)
 	}
 
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	prependSecure := false
@@ -3731,7 +4151,7 @@ func WriteJSON(writer io.Writer, v interface{}, options JSON, shouldOptimize boo
 	if options.ASCII {
 		if len(result) > 0 {
 			buf := new(bytes.Buffer)
-			for _, s := range bytesToString(result) {
+			for _, s := range string(result) {
 				char := string(s)
 				if s >= 128 {
 					char = fmt.Sprintf("\\u%04x", int64(s))
@@ -3747,154 +4167,161 @@ func WriteJSON(writer io.Writer, v interface{}, options JSON, shouldOptimize boo
 		result = append(stringToBytes(prefix), result...)
 	}
 
-	return writer.Write(result)
+	_, err = ctx.Write(result)
+	return err
 }
 
 // See https://golang.org/src/strings/builder.go#L45
-func bytesToString(b []byte) string {
-	return *(*string)(unsafe.Pointer(&b))
-}
+// func bytesToString(b []byte) string {
+// 	return *(*string)(unsafe.Pointer(&b))
+// }
 
 func stringToBytes(s string) []byte {
 	return *(*[]byte)(unsafe.Pointer(&s))
 }
 
-// DefaultJSONOptions is the optional settings that are being used
-// inside `ctx.JSON`.
-var DefaultJSONOptions = JSON{}
-
-// JSON marshals the given interface object and writes the JSON response to the client.
-// If the value is a compatible `proto.Message` one
-// then it only uses the options.Proto settings to marshal.
-func (ctx *Context) JSON(v interface{}, opts ...JSON) (n int, err error) {
-	ctx.ContentType(ContentJSONHeaderValue)
-	shouldOptimize := ctx.shouldOptimize()
-
-	optsLength := len(opts)
-
-	if shouldOptimize && optsLength == 0 { // if no options given and optimizations are enabled.
-		// try handle proto or easyjson.
-		if handled, n, err := handleJSONResponseValue(ctx, v, DefaultJSONOptions); handled {
-			return n, err
-		}
-
-		// as soon as possible, use the fast json marshaler with the http request context.
-		result, err := gojson.MarshalContext(ctx.request.Context(), v)
-		if err != nil {
-			return 0, err
-		}
-
-		return ctx.Write(result)
+type (
+	// ErrorHandler describes a context error handler which applies on
+	// JSON, JSONP, Protobuf, MsgPack, XML, YAML and Markdown write errors.
+	//
+	// It does NOT modify or handle the result of Context.GetErr at all,
+	// use a custom middleware instead if you want to handle the handler-provided custom errors (Context.SetErr)
+	//
+	// An ErrorHandler can be registered once via Application.SetErrorHandler method to override the default behavior.
+	// The default behavior is to simply send status internal code error
+	// without a body back to the client.
+	//
+	// See Application.SetContextErrorHandler for more.
+	ErrorHandler interface {
+		HandleContextError(ctx *Context, err error)
 	}
+	// ErrorHandlerFunc a function shortcut for ErrorHandler interface.
+	ErrorHandlerFunc func(ctx *Context, err error)
+)
 
-	options := DefaultJSONOptions
-	if optsLength > 0 {
-		options = opts[0]
-	}
+// HandleContextError completes the ErrorHandler interface.
+func (h ErrorHandlerFunc) HandleContextError(ctx *Context, err error) {
+	h(ctx, err)
+}
 
-	if options.StreamingJSON {
-		if shouldOptimize {
-			// jsoniterConfig := jsoniter.Config{
-			// 	EscapeHTML:    !options.UnescapeHTML,
-			// 	IndentionStep: 4,
-			// }.Froze()
-			// enc := jsoniterConfig.NewEncoder(ctx.writer)
-			// err = enc.Encode(v)
-			enc := gojson.NewEncoder(ctx.writer)
-			enc.SetEscapeHTML(!options.UnescapeHTML)
-			enc.SetIndent(options.Prefix, options.Indent)
-			err = enc.EncodeContext(options.GetContext(ctx), v)
-		} else {
-			enc := json.NewEncoder(ctx.writer)
-			enc.SetEscapeHTML(!options.UnescapeHTML)
-			enc.SetIndent(options.Prefix, options.Indent)
-			err = enc.Encode(v)
-		}
-
-		if err != nil {
-			ctx.app.Logger().Debugf("JSON: %v", err)
-			ctx.StatusCode(http.StatusInternalServerError) // it handles the fallback to normal mode here which also removes any compression headers.
-			return 0, err
-		}
-		return ctx.writer.Written(), err
-	}
-
-	n, err = WriteJSON(ctx.writer, v, options, shouldOptimize)
-	if err != nil {
-		ctx.app.Logger().Debugf("JSON: %v", err)
+func (ctx *Context) handleContextError(err error) {
+	if errHandler := ctx.app.GetContextErrorHandler(); errHandler != nil {
+		errHandler.HandleContextError(ctx, err)
+	} else {
 		ctx.StatusCode(http.StatusInternalServerError)
-		return 0, err
 	}
 
-	return n, err
+	// keep the error non nil so the caller has control over further actions.
+}
+
+// Render writes the response headers and calls the given renderer "r" to render data.
+// This method can be used while migrating from other frameworks.
+func (ctx *Context) Render(statusCode int, r interface {
+	// Render should push data with custom content type to the client.
+	Render(http.ResponseWriter) error
+	// WriteContentType writes custom content type to the response.
+	WriteContentType(w http.ResponseWriter)
+}) {
+	ctx.StatusCode(statusCode)
+
+	if statusCode >= 100 && statusCode <= 199 || statusCode == http.StatusNoContent || statusCode == http.StatusNotModified {
+		r.WriteContentType(ctx.writer)
+		return
+	}
+
+	if err := r.Render(ctx.writer); err != nil {
+		ctx.StopWithError(http.StatusInternalServerError, err)
+	}
+}
+
+// JSON marshals the given "v" value to JSON and writes the response to the client.
+// Look the Configuration.EnableProtoJSON and EnableEasyJSON too.
+//
+// It reports any JSON parser or write errors back to the caller.
+// Look the Application.SetContextErrorHandler to override the
+// default status code 500 with a custom error response.
+//
+// Customize the behavior of every `Context.JSON“ can be achieved
+// by modifying the package-level `WriteJSON` function on program initilization.
+func (ctx *Context) JSON(v interface{}, opts ...JSON) (err error) {
+	var options *JSON
+	if len(opts) > 0 {
+		options = &opts[0]
+	} else {
+		// If no options are given safely read the already-initialized value.
+		options = &DefaultJSONOptions
+	}
+
+	if err = ctx.writeJSON(v, options); err != nil {
+		// if no options are given or OmitErrorHandler is true
+		// then do call the error handler (which may lead to a cycle).
+		if !options.OmitErrorHandler {
+			ctx.handleContextError(err)
+		}
+	}
+
+	return
+}
+
+func (ctx *Context) writeJSON(v interface{}, options *JSON) error {
+	ctx.ContentType(ContentJSONHeaderValue)
+
+	// After content type given and before everything else, try handle proto or easyjson, no matter the performance mode.
+	if handled, _, err := ctx.handleSpecialJSONResponseValue(v, options); handled {
+		return err
+	}
+
+	return WriteJSON(ctx, v, options)
 }
 
 var finishCallbackB = []byte(");")
 
-// WriteJSONP marshals the given interface object and writes the JSON response to the writer.
-func WriteJSONP(writer io.Writer, v interface{}, options JSONP, optimize bool) (int, error) {
+// WriteJSONP marshals the given interface object and writes the JSONP response to the writer.
+var WriteJSONP = func(ctx *Context, v interface{}, options *JSONP) (err error) {
 	if callback := options.Callback; callback != "" {
-		n, err := writer.Write(stringToBytes(callback + "("))
+		_, err = ctx.Write(stringToBytes(callback + "("))
 		if err != nil {
-			return n, err
+			return err
 		}
-		defer writer.Write(finishCallbackB)
+		defer func() {
+			if err == nil {
+				ctx.Write(finishCallbackB)
+			}
+		}()
 	}
 
-	if !optimize && options.Indent == "" {
-		options.Indent = "    "
-	}
-
-	if indent := options.Indent; indent != "" {
-		marshalIndent := json.MarshalIndent
-		if optimize {
-			// marshalIndent = jsoniter.ConfigCompatibleWithStandardLibrary.MarshalIndent
-			marshalIndent = gojson.MarshalIndent
-		}
-
-		result, err := marshalIndent(v, "", indent)
-		if err != nil {
-			return 0, err
-		}
-		result = append(result, newLineB...)
-		return writer.Write(result)
-	}
-
-	marshal := json.Marshal
-	if optimize {
-		// marshal = jsoniter.ConfigCompatibleWithStandardLibrary.Marshal
-		marshal = gojson.Marshal
-	}
-
-	result, err := marshal(v)
-	if err != nil {
-		return 0, err
-	}
-	return writer.Write(result)
+	err = WriteJSON(ctx, v, &JSON{
+		Indent:           options.Indent,
+		OmitErrorHandler: options.OmitErrorHandler,
+	})
+	return err
 }
 
 // DefaultJSONPOptions is the optional settings that are being used
 // inside `ctx.JSONP`.
 var DefaultJSONPOptions = JSONP{}
 
-// JSONP marshals the given interface object and writes the JSON response to the client.
-func (ctx *Context) JSONP(v interface{}, opts ...JSONP) (int, error) {
-	options := DefaultJSONPOptions
-
+// JSONP marshals the given "v" value to JSON and sends the response to the client.
+//
+// It reports any JSON parser or write errors back to the caller.
+// Look the Application.SetContextErrorHandler to override the
+// default status code 500 with a custom error response.
+func (ctx *Context) JSONP(v interface{}, opts ...JSONP) (err error) {
+	var options *JSONP
 	if len(opts) > 0 {
-		options = opts[0]
+		options = &opts[0]
+	} else {
+		options = &DefaultJSONPOptions
 	}
 
 	ctx.ContentType(ContentJavascriptHeaderValue)
-
-	n, err := WriteJSONP(ctx.writer, v, options, ctx.shouldOptimize())
-	if err != nil {
-		ctx.app.Logger().Debugf("JSONP: %v", err)
-		ctx.StatusCode(http.StatusInternalServerError)
-		return 0, err
+	if err = WriteJSONP(ctx, v, options); err != nil {
+		if !options.OmitErrorHandler {
+			ctx.handleContextError(err)
+		}
 	}
 
-	return n, err
+	return
 }
 
 type xmlMapEntry struct {
@@ -3941,32 +4368,21 @@ func (m xmlMap) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
 }
 
 // WriteXML marshals the given interface object and writes the XML response to the writer.
-func WriteXML(writer io.Writer, v interface{}, options XML, optimize bool) (int, error) {
+var WriteXML = func(ctx *Context, v interface{}, options *XML) error {
 	if prefix := options.Prefix; prefix != "" {
-		n, err := writer.Write(stringToBytes(prefix))
+		_, err := ctx.Write(stringToBytes(prefix))
 		if err != nil {
-			return n, err
+			return err
 		}
 	}
 
-	if !optimize && options.Indent == "" {
-		options.Indent = "  " // Two spaces for XML is the default indentation when not optimized.
+	encoder := xml.NewEncoder(ctx.writer)
+	encoder.Indent("", options.Indent)
+	if err := encoder.Encode(v); err != nil {
+		return err
 	}
 
-	if indent := options.Indent; indent != "" {
-		result, err := xml.MarshalIndent(v, "", indent)
-		if err != nil {
-			return 0, err
-		}
-		result = append(result, newLineB...)
-		return writer.Write(result)
-	}
-
-	result, err := xml.Marshal(v)
-	if err != nil {
-		return 0, err
-	}
-	return writer.Write(result)
+	return encoder.Flush()
 }
 
 // DefaultXMLOptions is the optional settings that are being used
@@ -3975,37 +4391,40 @@ var DefaultXMLOptions = XML{}
 
 // XML marshals the given interface object and writes the XML response to the client.
 // To render maps as XML see the `XMLMap` package-level function.
-func (ctx *Context) XML(v interface{}, opts ...XML) (int, error) {
-	options := DefaultXMLOptions
-
+//
+// It reports any XML parser or write errors back to the caller.
+// Look the Application.SetContextErrorHandler to override the
+// default status code 500 with a custom error response.
+func (ctx *Context) XML(v interface{}, opts ...XML) (err error) {
+	var options *XML
 	if len(opts) > 0 {
-		options = opts[0]
+		options = &opts[0]
+	} else {
+		options = &DefaultXMLOptions
 	}
 
 	ctx.ContentType(ContentXMLHeaderValue)
-
-	n, err := WriteXML(ctx.writer, v, options, ctx.shouldOptimize())
-	if err != nil {
-		ctx.app.Logger().Debugf("XML: %v", err)
-		ctx.StatusCode(http.StatusInternalServerError)
-		return 0, err
+	if err = WriteXML(ctx, v, options); err != nil {
+		if !options.OmitErrorHandler {
+			ctx.handleContextError(err)
+		}
 	}
 
-	return n, err
+	return
 }
 
 // Problem writes a JSON or XML problem response.
 // Order of Problem fields are not always rendered the same.
 //
-// Behaves exactly like `Context.JSON`
+// Behaves exactly like the `Context.JSON` method
 // but with default ProblemOptions.JSON indent of " " and
 // a response content type of "application/problem+json" instead.
 //
 // Use the options.RenderXML and XML fields to change this behavior and
 // send a response of content type "application/problem+xml" instead.
 //
-// Read more at: https://github.com/kataras/iris/wiki/Routing-error-handlers
-func (ctx *Context) Problem(v interface{}, opts ...ProblemOptions) (int, error) {
+// Read more at: https://github.com/kataras/iris/blob/master/_examples/routing/http-errors.
+func (ctx *Context) Problem(v interface{}, opts ...ProblemOptions) error {
 	options := DefaultProblemOptions
 	if len(opts) > 0 {
 		options = opts[0]
@@ -4038,16 +4457,18 @@ func (ctx *Context) Problem(v interface{}, opts ...ProblemOptions) (int, error) 
 	}
 
 	ctx.contentTypeOnce(ContentJSONProblemHeaderValue, "")
-	return ctx.JSON(v, options.JSON)
+	return ctx.writeJSON(v, &options.JSON)
 }
 
 // WriteMarkdown parses the markdown to html and writes these contents to the writer.
-func WriteMarkdown(writer io.Writer, markdownB []byte, options Markdown) (int, error) {
+var WriteMarkdown = func(ctx *Context, markdownB []byte, options *Markdown) error {
 	buf := blackfriday.Run(markdownB)
 	if options.Sanitize {
 		buf = bluemonday.UGCPolicy().SanitizeBytes(buf)
 	}
-	return writer.Write(buf)
+
+	_, err := ctx.Write(buf)
+	return err
 }
 
 // DefaultMarkdownOptions is the optional settings that are being used
@@ -4055,66 +4476,109 @@ func WriteMarkdown(writer io.Writer, markdownB []byte, options Markdown) (int, e
 var DefaultMarkdownOptions = Markdown{}
 
 // Markdown parses the markdown to html and renders its result to the client.
-func (ctx *Context) Markdown(markdownB []byte, opts ...Markdown) (int, error) {
-	options := DefaultMarkdownOptions
-
+//
+// It reports any Markdown parser or write errors back to the caller.
+// Look the Application.SetContextErrorHandler to override the
+// default status code 500 with a custom error response.
+func (ctx *Context) Markdown(markdownB []byte, opts ...Markdown) (err error) {
+	var options *Markdown
 	if len(opts) > 0 {
-		options = opts[0]
+		options = &opts[0]
+	} else {
+		options = &DefaultMarkdownOptions
 	}
 
 	ctx.ContentType(ContentHTMLHeaderValue)
+	if err = WriteMarkdown(ctx, markdownB, options); err != nil {
+		if !options.OmitErrorHandler {
+			ctx.handleContextError(err)
+		}
+	}
 
-	n, err := WriteMarkdown(ctx.writer, markdownB, options)
+	return
+}
+
+// WriteYAML sends YAML response to the client.
+var WriteYAML = func(ctx *Context, v interface{}, indentSpace int) error {
+	encoder := yaml.NewEncoder(ctx.writer)
+	encoder.SetIndent(indentSpace)
+
+	if err := encoder.Encode(v); err != nil {
+		return err
+	}
+
+	return encoder.Close()
+}
+
+// YAML marshals the given "v" value using the yaml marshaler and writes the result to the client.
+//
+// It reports any YAML parser or write errors back to the caller.
+// Look the Application.SetContextErrorHandler to override the
+// default status code 500 with a custom error response.
+func (ctx *Context) YAML(v interface{}) error {
+	ctx.ContentType(ContentYAMLHeaderValue)
+
+	err := WriteYAML(ctx, v, 0)
 	if err != nil {
-		ctx.app.Logger().Debugf("Markdown: %v", err)
-		ctx.StatusCode(http.StatusInternalServerError)
+		ctx.handleContextError(err)
+		return err
+	}
+
+	return nil
+}
+
+// TextYAML calls the Context.YAML method but with the text/yaml content type instead.
+func (ctx *Context) TextYAML(v interface{}) error {
+	ctx.ContentType(ContentYAMLTextHeaderValue)
+
+	err := WriteYAML(ctx, v, 4)
+	if err != nil {
+		ctx.handleContextError(err)
+		return err
+	}
+
+	return nil
+}
+
+// Protobuf marshals the given "v" value of proto Message and writes its result to the client.
+//
+// It reports any protobuf parser or write errors back to the caller.
+// Look the Application.SetContextErrorHandler to override the
+// default status code 500 with a custom error response.
+func (ctx *Context) Protobuf(v proto.Message) (int, error) {
+	out, err := proto.Marshal(v)
+	if err != nil {
+		ctx.handleContextError(err)
 		return 0, err
+	}
+
+	ctx.ContentType(ContentProtobufHeaderValue)
+	n, err := ctx.Write(out)
+	if err != nil {
+		ctx.handleContextError(err)
 	}
 
 	return n, err
 }
 
-// YAML marshals the "v" using the yaml marshaler
-// and sends the result to the client.
-func (ctx *Context) YAML(v interface{}) (int, error) {
-	out, err := yaml.Marshal(v)
-	if err != nil {
-		ctx.app.Logger().Debugf("YAML: %v", err)
-		ctx.StatusCode(http.StatusInternalServerError)
-		return 0, err
-	}
-
-	ctx.ContentType(ContentYAMLHeaderValue)
-	return ctx.Write(out)
-}
-
-// TextYAML marshals the "v" using the yaml marshaler
-// and renders to the client.
-func (ctx *Context) TextYAML(v interface{}) (int, error) {
-	ctx.contentTypeOnce(ContentYAMLTextHeaderValue, "")
-	return ctx.YAML(v)
-}
-
-// Protobuf parses the "v" of proto Message and renders its result to the client.
-func (ctx *Context) Protobuf(v proto.Message) (int, error) {
-	out, err := proto.Marshal(v)
-	if err != nil {
-		return 0, err
-	}
-
-	ctx.ContentType(ContentProtobufHeaderValue)
-	return ctx.Write(out)
-}
-
-// MsgPack parses the "v" of msgpack format and renders its result to the client.
+// MsgPack marshals the given "v" value of msgpack format and writes its result to the client.
+//
+// It reports any message pack or write errors back to the caller.
+// Look the Application.SetContextErrorHandler to override the
+// default status code 500 with a custom error response.
 func (ctx *Context) MsgPack(v interface{}) (int, error) {
 	out, err := msgpack.Marshal(v)
 	if err != nil {
-		return 0, err
+		ctx.handleContextError(err)
 	}
 
 	ctx.ContentType(ContentMsgPackHeaderValue)
-	return ctx.Write(out)
+	n, err := ctx.Write(out)
+	if err != nil {
+		ctx.handleContextError(err)
+	}
+
+	return n, err
 }
 
 //  +-----------------------------------------------------------------------+
@@ -4271,7 +4735,7 @@ func parseHeader(headerValue string) []string {
 //
 // Supports the above without quality values.
 //
-// Read more at: https://github.com/kataras/iris/wiki/Content-negotiation
+// Read more at: https://github.com/kataras/iris/tree/master/_examples/response-writer/content-negotiation
 func (ctx *Context) Negotiate(v interface{}) (int, error) {
 	contentType, charset, encoding, content := ctx.Negotiation().Build()
 	if v == nil {
@@ -4322,19 +4786,54 @@ func (ctx *Context) Negotiate(v interface{}) (int, error) {
 	case ContentTextHeaderValue, ContentHTMLHeaderValue:
 		return ctx.WriteString(v.(string))
 	case ContentMarkdownHeaderValue:
-		return ctx.Markdown(v.([]byte))
+		err := ctx.Markdown(v.([]byte))
+		if err != nil {
+			return 0, err
+		}
+
+		return ctx.writer.Written(), nil
 	case ContentJSONHeaderValue:
-		return ctx.JSON(v)
+		err := ctx.JSON(v)
+		if err != nil {
+			return 0, err
+		}
+
+		return ctx.writer.Written(), nil
 	case ContentJSONProblemHeaderValue, ContentXMLProblemHeaderValue:
-		return ctx.Problem(v)
+		err := ctx.Problem(v)
+		if err != nil {
+			return 0, err
+		}
+
+		return ctx.writer.Written(), nil
 	case ContentJavascriptHeaderValue:
-		return ctx.JSONP(v)
+		err := ctx.JSONP(v)
+		if err != nil {
+			return 0, err
+		}
+
+		return ctx.writer.Written(), nil
 	case ContentXMLHeaderValue, ContentXMLUnreadableHeaderValue:
-		return ctx.XML(v)
+		err := ctx.XML(v)
+		if err != nil {
+			return 0, err
+		}
+
+		return ctx.writer.Written(), nil
 	case ContentYAMLHeaderValue:
-		return ctx.YAML(v)
+		err := ctx.YAML(v)
+		if err != nil {
+			return 0, err
+		}
+
+		return ctx.writer.Written(), nil
 	case ContentYAMLTextHeaderValue:
-		return ctx.TextYAML(v)
+		err := ctx.TextYAML(v)
+		if err != nil {
+			return 0, err
+		}
+
+		return ctx.writer.Written(), nil
 	case ContentProtobufHeaderValue:
 		msg, ok := v.(proto.Message)
 		if !ok {
@@ -4916,9 +5415,33 @@ func (ctx *Context) SendFileWithRate(src, destName string, limit float64, burst 
 		destName = filepath.Base(src)
 	}
 
-	ctx.writer.Header().Set(ContentDispositionHeaderKey, "attachment;filename="+destName)
+	ctx.writer.Header().Set(ContentDispositionHeaderKey, MakeDisposition(destName))
 	return ctx.ServeFileWithRate(src, limit, burst)
 }
+
+// MakeDisposition generates an HTTP Content-Disposition field-value.
+// Similar solution followed by: Spring(Java), Symfony(PHP) and Ruby on Rails frameworks too.
+//
+// Fixes CVE-2020-5398. Reported by motoyasu-saburi.
+func MakeDisposition(filename string) string {
+	return `attachment; filename*=UTF-8''` + url.QueryEscape(filename)
+} /*
+// Found at: https://stackoverflow.com/questions/53069040/checking-a-string-contains-only-ascii-characters
+// A faster (better, more idiomatic) version, which avoids unnecessary rune conversions.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] > unicode.MaxASCII {
+			return false
+		}
+	}
+	return true
+}
+func isRFC5987AttrChar(c rune) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		c == '!' || c == '#' || c == '$' || c == '&' || c == '+' || c == '-' ||
+		c == '.' || c == '^' || c == '_' || c == '`' || c == '|' || c == '~'
+}
+*/
 
 //  +------------------------------------------------------------+
 //  | Cookies                                                    |
@@ -5135,7 +5658,11 @@ type SecureCookie interface {
 //
 // Example: https://github.com/kataras/iris/tree/master/_examples/cookies/securecookie
 func CookieEncoding(encoding SecureCookie, cookieNames ...string) CookieOption {
-	return func(_ *Context, c *http.Cookie, op uint8) {
+	if encoding == nil {
+		return func(_ *Context, _ *http.Cookie, _ uint8) {}
+	}
+
+	return func(ctx *Context, c *http.Cookie, op uint8) {
 		if op == OpCookieDel {
 			return
 		}
@@ -5149,10 +5676,12 @@ func CookieEncoding(encoding SecureCookie, cookieNames ...string) CookieOption {
 			// Should encode, it's a write to the client operation.
 			newVal, err := encoding.Encode(c.Name, c.Value)
 			if err != nil {
+				ctx.Application().Logger().Error(err)
 				c.Value = ""
 			} else {
 				c.Value = newVal
 			}
+
 			return
 		case OpCookieGet:
 			// Should decode, it's a read from the client operation.
@@ -5171,15 +5700,15 @@ const cookieOptionsContextKey = "iris.cookie.options"
 // cookies sent or received from the next Handler in the chain.
 //
 // Available builtin Cookie options are:
-//  * CookieAllowReclaim
-//  * CookieAllowSubdomains
-//  * CookieSecure
-//  * CookieHTTPOnly
-//  * CookieSameSite
-//  * CookiePath
-//  * CookieCleanPath
-//  * CookieExpires
-//  * CookieEncoding
+//   - CookieAllowReclaim
+//   - CookieAllowSubdomains
+//   - CookieSecure
+//   - CookieHTTPOnly
+//   - CookieSameSite
+//   - CookiePath
+//   - CookieCleanPath
+//   - CookieExpires
+//   - CookieEncoding
 //
 // Example at: https://github.com/kataras/iris/tree/master/_examples/cookies/securecookie
 func (ctx *Context) AddCookieOptions(options ...CookieOption) {
@@ -5237,18 +5766,30 @@ func (ctx *Context) UpsertCookie(cookie *http.Cookie, options ...CookieOption) b
 	ctx.applyCookieOptions(cookie, OpCookieSet, options)
 
 	header := ctx.ResponseWriter().Header()
-
 	if cookies := header[setCookieHeaderKey]; len(cookies) > 0 {
 		s := cookie.Name + "=" // name=?value
+
+		existingUpdated := false
+
 		for i, c := range cookies {
 			if strings.HasPrefix(c, s) {
+				if existingUpdated { // fixes #1877
+					// remove any duplicated.
+					cookies[i] = ""
+					header[setCookieHeaderKey] = cookies
+					continue
+				}
 				// We need to update the Set-Cookie (to update the expiration or any other cookie's properties).
 				// Probably the cookie is set and then updated in the first session creation
 				// (e.g. UpdateExpiration, see https://github.com/kataras/iris/issues/1485).
 				cookies[i] = cookie.String()
 				header[setCookieHeaderKey] = cookies
-				return false
+				existingUpdated = true
 			}
+		}
+
+		if existingUpdated {
+			return false // existing one updated.
 		}
 	}
 
@@ -5275,8 +5816,9 @@ var SetCookieKVExpiration = 8760 * time.Hour
 // (note that client should be responsible for that if server sent an empty cookie's path, all browsers are compatible)
 // ctx.SetCookieKV(name, value, iris.CookieCleanPath/iris.CookiePath(""))
 // More:
-//                              iris.CookieExpires(time.Duration)
-//                              iris.CookieHTTPOnly(false)
+//
+//	iris.CookieExpires(time.Duration)
+//	iris.CookieHTTPOnly(false)
 //
 // Examples: https://github.com/kataras/iris/tree/master/_examples/cookies/basic
 func (ctx *Context) SetCookieKV(name, value string, options ...CookieOption) {
@@ -5378,7 +5920,7 @@ func (ctx *Context) MaxAge() int64 {
 }
 
 //  +------------------------------------------------------------+
-//  | Advanced: Response Recorder and Transactions               |
+//  | Advanced: Response Recorder                                |
 //  +------------------------------------------------------------+
 
 // Record transforms the context's basic and direct responseWriter to a *ResponseRecorder
@@ -5411,72 +5953,6 @@ func (ctx *Context) IsRecording() (*ResponseRecorder, bool) {
 	// instead we do: recorder,ok = Recording()
 	rr, ok := ctx.writer.(*ResponseRecorder)
 	return rr, ok
-}
-
-// ErrTransactionInterrupt can be used to manually force-complete a Context's transaction
-// and log(warn) the wrapped error's message.
-// Usage: `... return fmt.Errorf("my custom error message: %w", context.ErrTransactionInterrupt)`.
-var ErrTransactionInterrupt = errors.New("transaction interrupted")
-
-// BeginTransaction starts a scoped transaction.
-//
-// Can't say a lot here because it will take more than 200 lines to write about.
-// You can search third-party articles or books on how Business Transaction works (it's quite simple, especially here).
-//
-// Note that this is unique and new
-// (=I haver never seen any other examples or code in Golang on this subject, so far, as with the most of iris features...)
-// it's not covers all paths,
-// such as databases, this should be managed by the libraries you use to make your database connection,
-// this transaction scope is only for context's response.
-// Transactions have their own middleware ecosystem also.
-//
-// See https://github.com/kataras/iris/tree/master/_examples/ for more
-func (ctx *Context) BeginTransaction(pipe func(t *Transaction)) {
-	// do NOT begin a transaction when the previous transaction has been failed
-	// and it was requested scoped or SkipTransactions called manually.
-	if ctx.TransactionsSkipped() {
-		return
-	}
-
-	// start recording in order to be able to control the full response writer
-	ctx.Record()
-
-	t := newTransaction(ctx) // it calls this *context, so the overriding with a new pool's New of context.Context wil not work here.
-	defer func() {
-		if err := recover(); err != nil {
-			ctx.app.Logger().Warn(fmt.Errorf("recovery from panic: %w", ErrTransactionInterrupt))
-			// complete (again or not , doesn't matters) the scope without loud
-			t.Complete(nil)
-			// we continue as normal, no need to return here*
-		}
-
-		// write the temp contents to the original writer
-		t.Context().ResponseWriter().CopyTo(ctx.writer)
-		// give back to the transaction the original writer (SetBeforeFlush works this way and only this way)
-		// this is tricky but nessecery if we want ctx.FireStatusCode to work inside transactions
-		t.Context().ResetResponseWriter(ctx.writer)
-	}()
-
-	// run the worker with its context clone inside.
-	pipe(t)
-}
-
-// skipTransactionsContextKey set this to any value to stop executing next transactions
-// it's a context-key in order to be used from anywhere, set it by calling the SkipTransactions()
-const skipTransactionsContextKey = "iris.transactions.skip"
-
-// SkipTransactions if called then skip the rest of the transactions
-// or all of them if called before the first transaction
-func (ctx *Context) SkipTransactions() {
-	ctx.values.Set(skipTransactionsContextKey, 1)
-}
-
-// TransactionsSkipped returns true if the transactions skipped or canceled at all.
-func (ctx *Context) TransactionsSkipped() bool {
-	if n, err := ctx.values.GetInt(skipTransactionsContextKey); err == nil && n == 1 {
-		return true
-	}
-	return false
 }
 
 // Exec calls the framewrok's ServeHTTPC
@@ -5889,11 +6365,11 @@ const userContextKey = "iris.user"
 // next handlers in the chain.
 //
 // The "i" input argument can be:
-// - A value which completes the User interface
-// - A map[string]interface{}.
-// - A value which does not complete the whole User interface
-// - A value which does not complete the User interface at all
-//   (only its `User().GetRaw` method is available).
+//   - A value which completes the User interface
+//   - A map[string]interface{}.
+//   - A value which does not complete the whole User interface
+//   - A value which does not complete the User interface at all
+//     (only its `User().GetRaw` method is available).
 //
 // Look the `User` method to retrieve it.
 func (ctx *Context) SetUser(i interface{}) error {
@@ -5961,21 +6437,21 @@ func (ctx *Context) Deadline() (deadline time.Time, ok bool) {
 //
 // Done is provided for use in select statements:
 //
-//  // Stream generates values with DoSomething and sends them to out
-//  // until DoSomething returns an error or ctx.Done is closed.
-//  func Stream(ctx context.Context, out chan<- Value) error {
-//  	for {
-//  		v, err := DoSomething(ctx)
-//  		if err != nil {
-//  			return err
-//  		}
-//  		select {
-//  		case <-ctx.Done():
-//  			return ctx.Err()
-//  		case out <- v:
-//  		}
-//  	}
-//  }
+//	// Stream generates values with DoSomething and sends them to out
+//	// until DoSomething returns an error or ctx.Done is closed.
+//	func Stream(ctx context.Context, out chan<- Value) error {
+//		for {
+//			v, err := DoSomething(ctx)
+//			if err != nil {
+//				return err
+//			}
+//			select {
+//			case <-ctx.Done():
+//				return ctx.Err()
+//			case out <- v:
+//			}
+//		}
+//	}
 //
 // See https://blog.golang.org/pipelines for more examples of how to use
 // a Done channel for cancellation.

@@ -4,18 +4,18 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"net/http"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
-	"github.com/aymerick/raymond"
+	"github.com/mailgun/raymond/v2"
 )
 
 // HandlebarsEngine contains the handlebars view engine structure.
 type HandlebarsEngine struct {
-	fs http.FileSystem
+	fs fs.FS
 	// files configuration
 	rootDir   string
 	extension string
@@ -41,7 +41,7 @@ var (
 // Usage:
 // Handlebars("./views", ".html") or
 // Handlebars(iris.Dir("./views"), ".html") or
-// Handlebars(AssetFile(), ".html") for embedded data.
+// Handlebars(embed.FS, ".html") or Handlebars(AssetFile(), ".html") for embedded data.
 func Handlebars(fs interface{}, extension string) *HandlebarsEngine {
 	s := &HandlebarsEngine{
 		fs:            getFS(fs),
@@ -66,6 +66,15 @@ func Handlebars(fs interface{}, extension string) *HandlebarsEngine {
 // RootDir sets the directory to be used as a starting point
 // to load templates from the provided file system.
 func (s *HandlebarsEngine) RootDir(root string) *HandlebarsEngine {
+	if s.fs != nil && root != "" && root != "/" && root != "." && root != s.rootDir {
+		sub, err := fs.Sub(s.fs, s.rootDir)
+		if err != nil {
+			panic(err)
+		}
+
+		s.fs = sub // here so the "middleware" can work.
+	}
+
 	s.rootDir = filepath.ToSlash(root)
 	return s
 }
@@ -94,8 +103,8 @@ func (s *HandlebarsEngine) Reload(developmentMode bool) *HandlebarsEngine {
 }
 
 // Layout sets the layout template file which should use
-// the {{ yield }} func to yield the main template file
-// and optionally {{partial/partial_r/render}} to render
+// the {{ yield . }} func to yield the main template file
+// and optionally {{partial/partial_r/render . }} to render
 // other template files like headers and footers.
 func (s *HandlebarsEngine) Layout(layoutFile string) *HandlebarsEngine {
 	s.layout = layoutFile
@@ -125,7 +134,9 @@ func (s *HandlebarsEngine) AddGlobalFunc(funcName string, funcBody interface{}) 
 //
 // Returns an error if something bad happens, user is responsible to catch it.
 func (s *HandlebarsEngine) Load() error {
-	return walk(s.fs, s.rootDir, func(path string, info os.FileInfo, _ error) error {
+	rootDirName := getRootDirName(s.fs)
+
+	return walk(s.fs, "", func(path string, info os.FileInfo, _ error) error {
 		if info == nil || info.IsDir() {
 			return nil
 		}
@@ -134,6 +145,11 @@ func (s *HandlebarsEngine) Load() error {
 			if !strings.HasSuffix(path, s.extension) {
 				return nil
 			}
+		}
+
+		if s.rootDir == rootDirName {
+			path = strings.TrimPrefix(path, rootDirName)
+			path = strings.TrimPrefix(path, "/")
 		}
 
 		contents, err := asset(s.fs, path)
@@ -222,7 +238,7 @@ func (s *HandlebarsEngine) ExecuteWriter(w io.Writer, filename string, layout st
 			if context == nil {
 				context = make(map[string]interface{}, 1)
 			}
-			// I'm implemented the {{ yield }} as with the rest of template engines, so this is not inneed for iris, but the user can do that manually if want
+			// I'm implemented the {{ yield . }} as with the rest of template engines, so this is not inneed for iris, but the user can do that manually if want
 			// there is no performance cost: raymond.RegisterPartialTemplate(name, tmpl)
 			context["yield"] = raymond.SafeString(contents)
 		}

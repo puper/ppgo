@@ -280,12 +280,7 @@ func replaceEntities(b []byte, i int, entitiesMap map[string][]byte, revEntities
 			} else if r[0] == '&' {
 				// check if for example &amp; is followed by something that could potentially be an entity
 				k := j + 1
-				if k < len(b) && b[k] == '#' {
-					k++
-				}
-				for ; k < len(b) && k-j <= MaxEntityLength && (b[k] >= '0' && b[k] <= '9' || b[k] >= 'a' && b[k] <= 'z' || b[k] >= 'A' && b[k] <= 'Z'); k++ {
-				}
-				if k < len(b) && b[k] == ';' {
+				if k < len(b) && (b[k] >= '0' && b[k] <= '9' || b[k] >= 'a' && b[k] <= 'z' || b[k] >= 'A' && b[k] <= 'Z' || b[k] == '#') {
 					return b, k
 				}
 			}
@@ -397,8 +392,9 @@ var URLEncodingTable = [256]bool{
 }
 
 // DataURIEncodingTable is a charmap for which characters need escaping in the Data URI encoding scheme
-// Escape only non-printable characters, unicode and %, #, &. IE11 additionally requires encoding of
-// \, [, ], ", <, >, `, {, }, |, ^ which is not required by Chrome, Firefox, Opera, Edge, Safari, Yandex
+// Escape only non-printable characters, unicode and %, #, &.
+// IE11 additionally requires encoding of \, [, ], ", <, >, `, {, }, |, ^ which is not required by Chrome, Firefox, Opera, Edge, Safari, Yandex
+// To pass the HTML validator, restricted URL characters must be escaped: non-printable characters, space, <, >, #, %, "
 var DataURIEncodingTable = [256]bool{
 	// ASCII
 	true, true, true, true, true, true, true, true,
@@ -406,7 +402,7 @@ var DataURIEncodingTable = [256]bool{
 	true, true, true, true, true, true, true, true,
 	true, true, true, true, true, true, true, true,
 
-	false, false, true, true, false, true, true, false, // ", #, %, &
+	true, false, true, true, false, true, true, false, // space, ", #, %, &
 	false, false, false, false, false, false, false, false,
 	false, false, false, false, false, false, false, false,
 	false, false, false, false, true, false, true, false, // <, >
@@ -448,15 +444,11 @@ func EncodeURL(b []byte, table [256]bool) []byte {
 	for i := 0; i < len(b); i++ {
 		c := b[i]
 		if table[c] {
-			if c == ' ' {
-				b[i] = '+'
-			} else {
-				b = append(b, 0, 0)
-				copy(b[i+3:], b[i+1:])
-				b[i+0] = '%'
-				b[i+1] = "0123456789ABCDEF"[c>>4]
-				b[i+2] = "0123456789ABCDEF"[c&15]
-			}
+			b = append(b, 0, 0)
+			copy(b[i+3:], b[i+1:])
+			b[i+0] = '%'
+			b[i+1] = "0123456789ABCDEF"[c>>4]
+			b[i+2] = "0123456789ABCDEF"[c&15]
 		}
 	}
 	return b

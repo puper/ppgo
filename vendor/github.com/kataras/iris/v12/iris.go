@@ -1,6 +1,7 @@
 package iris
 
 import (
+	"bytes"
 	stdContext "context"
 	"errors"
 	"fmt"
@@ -19,7 +20,6 @@ import (
 	"github.com/kataras/iris/v12/core/netutil"
 	"github.com/kataras/iris/v12/core/router"
 	"github.com/kataras/iris/v12/i18n"
-	"github.com/kataras/iris/v12/middleware/accesslog"
 	"github.com/kataras/iris/v12/middleware/cors"
 	"github.com/kataras/iris/v12/middleware/recover"
 	"github.com/kataras/iris/v12/middleware/requestid"
@@ -38,7 +38,7 @@ import (
 )
 
 // Version is the current version of the Iris Web Framework.
-const Version = "12.2.0-alpha9"
+const Version = "12.2.0"
 
 // Byte unit helpers.
 const (
@@ -59,6 +59,8 @@ type Application struct {
 	*router.Router
 	router.HTTPErrorHandler // if Router is Downgraded this is nil.
 	ContextPool             *context.Pool
+	// See SetContextErrorHandler, defaults to nil.
+	contextErrorHandler context.ErrorHandler
 
 	// config contains the configuration fields
 	// all fields defaults to something that is working, developers don't have to set it.
@@ -79,7 +81,7 @@ type Application struct {
 	minifier *minify.M
 
 	// view engine
-	view view.View
+	view *view.View
 	// used for build
 	builded     bool
 	defaultMode bool
@@ -117,6 +119,7 @@ func New() *Application {
 		Router:   router.NewRouter(),
 		I18n:     i18n.New(),
 		minifier: newMinifier(),
+		view:     new(view.View),
 	}
 
 	logger := newLogger(app)
@@ -134,16 +137,17 @@ func New() *Application {
 // Default with "debug" Logger Level.
 // Localization enabled on "./locales" directory
 // and HTML templates on "./views" or "./templates" directory.
-// It runs with the AccessLog on "./access.log",
-// CORS (allow all), Recovery and Request ID middleware already attached.
+// CORS (allow all), Recovery and
+// Request ID middleware already registered.
 func Default() *Application {
 	app := New()
 	// Set default log level.
 	app.logger.SetLevel("debug")
 	app.logger.Debugf(`Log level set to "debug"`)
 
+	/* #2046.
 	// Register the accesslog middleware.
-	logFile, err := os.OpenFile("./access.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	logFile, err := os.OpenFile("./access.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err == nil {
 		// Close the file on shutdown.
 		app.ConfigureHost(func(su *Supervisor) {
@@ -157,6 +161,7 @@ func Default() *Application {
 		app.UseRouter(ac.Handler)
 		app.logger.Debugf("Using <%s> to log requests", logFile.Name())
 	}
+	*/
 
 	// Register the requestid middleware
 	// before recover so current Context.GetID() contains the info on panic logs.
@@ -296,6 +301,7 @@ func (app *Application) ConfigurationReadOnly() context.ConfigurationReadOnly {
 // Adding one or more outputs : app.Logger().AddOutput(io.Writer...)
 //
 // Adding custom levels requires import of the `github.com/kataras/golog` package:
+//
 //	First we create our level to a golog.Level
 //	in order to be used in the Log functions.
 //	var SuccessLevel golog.Level = 6
@@ -306,6 +312,7 @@ func (app *Application) ConfigurationReadOnly() context.ConfigurationReadOnly {
 //		// ColorfulText (Green Color[SUCC])
 //		ColorfulText: "\x1b[32m[SUCC]\x1b[0m",
 //	}
+//
 // Usage:
 // app.Logger().SetLevel("success")
 // app.Logger().Logf(SuccessLevel, "a custom leveled log message")
@@ -421,6 +428,36 @@ func (app *Application) View(writer io.Writer, filename string, layout string, b
 	return app.view.ExecuteWriter(writer, filename, layout, bindingData)
 }
 
+// GetContextPool returns the Iris sync.Pool which holds the contexts values.
+// Iris automatically releases the request context, so you don't have to use it.
+// It's only useful to manually release the context on cases that connection
+// is hijacked by a third-party middleware and the http handler return too fast.
+func (app *Application) GetContextPool() *context.Pool {
+	return app.ContextPool
+}
+
+// SetContextErrorHandler can optionally register a handler to handle
+// and fire a customized error body to the client on JSON write failures.
+//
+// ExampleCode:
+//
+//	 type contextErrorHandler struct{}
+//	 func (e *contextErrorHandler) HandleContextError(ctx iris.Context, err error) {
+//		 errors.InvalidArgument.Err(ctx, err)
+//	 }
+//	 ...
+//		app.SetContextErrorHandler(new(contextErrorHandler))
+func (app *Application) SetContextErrorHandler(errHandler context.ErrorHandler) *Application {
+	app.contextErrorHandler = errHandler
+	return app
+}
+
+// GetContextErrorHandler returns the handler which handles errors
+// on JSON write failures.
+func (app *Application) GetContextErrorHandler() context.ErrorHandler {
+	return app.contextErrorHandler
+}
+
 // ConfigureHost accepts one or more `host#Configuration`, these configurators functions
 // can access the host created by `app.Run` or `app.Listen`,
 // they're being executed when application is ready to being served to the public.
@@ -443,6 +480,40 @@ func (app *Application) ConfigureHost(configurators ...host.Configurator) *Appli
 	return app
 }
 
+const serverLoggerPrefix = "[HTTP Server] "
+
+type customHostServerLogger struct { // see #1875
+	parent     io.Writer
+	ignoreLogs [][]byte
+}
+
+var newLineBytes = []byte("\n")
+
+func newCustomHostServerLogger(w io.Writer, ignoreLogs []string) *customHostServerLogger {
+	prefixAsByteSlice := []byte(serverLoggerPrefix)
+
+	// build the ignore lines.
+	ignoreLogsAsByteSlice := make([][]byte, 0, len(ignoreLogs))
+	for _, s := range ignoreLogs {
+		ignoreLogsAsByteSlice = append(ignoreLogsAsByteSlice, append(prefixAsByteSlice, []byte(s)...)) // append([]byte(s), newLineBytes...)
+	}
+
+	return &customHostServerLogger{
+		parent:     w,
+		ignoreLogs: ignoreLogsAsByteSlice,
+	}
+}
+
+func (l *customHostServerLogger) Write(p []byte) (int, error) {
+	for _, ignoredLogBytes := range l.ignoreLogs {
+		if bytes.Equal(bytes.TrimSuffix(p, newLineBytes), ignoredLogBytes) {
+			return 0, nil
+		}
+	}
+
+	return l.parent.Write(p)
+}
+
 // NewHost accepts a standard *http.Server object,
 // completes the necessary missing parts of that "srv"
 // and returns a new, ready-to-use, host (supervisor).
@@ -455,9 +526,10 @@ func (app *Application) NewHost(srv *http.Server) *host.Supervisor {
 		srv.Handler = app.Router
 	}
 
-	// check if different ErrorLog provided, if not bind it with the framework's logger
+	// check if different ErrorLog provided, if not bind it with the framework's logger.
 	if srv.ErrorLog == nil {
-		srv.ErrorLog = log.New(app.logger.Printer.Output, "[HTTP Server] ", 0)
+		serverLogger := newCustomHostServerLogger(app.logger.Printer.Output, app.config.IgnoreServerErrors)
+		srv.ErrorLog = log.New(serverLogger, serverLoggerPrefix, 0)
 	}
 
 	if addr := srv.Addr; addr == "" {
@@ -477,30 +549,54 @@ func (app *Application) NewHost(srv *http.Server) *host.Supervisor {
 	// bind the constructed server and return it
 	su := host.New(srv)
 
-	if app.config.vhost == "" { // vhost now is useful for router subdomain on wildcard subdomains,
+	if app.config.VHost == "" { // vhost now is useful for router subdomain on wildcard subdomains,
 		// in order to correct decide what to do on:
 		// mydomain.com -> invalid
 		// localhost -> invalid
 		// sub.mydomain.com -> valid
 		// sub.localhost -> valid
 		// we need the host (without port if 80 or 443) in order to validate these, so:
-		app.config.vhost = netutil.ResolveVHost(srv.Addr)
+		app.config.VHost = netutil.ResolveVHost(srv.Addr)
+	} else {
+		context.GetDomain = func(_ string) string { // #1886
+			return app.config.VHost
+		}
 	}
 
-	// app.logger.Debugf("Host: virtual host is %s", app.config.vhost)
+	// app.logger.Debugf("Host: virtual host is %s", app.config.VHost)
 
 	// the below schedules some tasks that will run among the server
 
 	if !app.config.DisableStartupLog {
-		// show the available info to exit from app.
-		su.RegisterOnServe(host.WriteStartupLogOnServe(app.logger.Printer.Output)) // app.logger.Writer -> Info
+		printer := app.logger.Printer.Output
+		hostPrinter := host.WriteStartupLogOnServe(printer)
+		if len(app.Hosts) == 0 { // print the version info on the first running host.
+			su.RegisterOnServe(func(h host.TaskHost) {
+				hasBuildInfo := BuildTime != "" && BuildRevision != ""
+				tab := " "
+				if hasBuildInfo {
+					tab = "   "
+				}
+				fmt.Fprintf(printer, "Iris Version:%s%s\n", tab, Version)
+
+				if hasBuildInfo {
+					fmt.Fprintf(printer, "Build Time:     %s\nBuild Revision: %s\n", BuildTime, BuildRevision)
+				}
+				fmt.Fprintln(printer)
+
+				hostPrinter(h)
+			})
+		} else {
+			su.RegisterOnServe(hostPrinter)
+		}
+
 		// app.logger.Debugf("Host: register startup notifier")
 	}
 
 	if !app.config.DisableInterruptHandler {
 		// when CTRL/CMD+C pressed.
 		shutdownTimeout := 10 * time.Second
-		host.RegisterOnInterrupt(host.ShutdownOnInterrupt(su, shutdownTimeout))
+		RegisterOnInterrupt(host.ShutdownOnInterrupt(su, shutdownTimeout))
 		// app.logger.Debugf("Host: register server shutdown on interrupt(CTRL+C/CMD+C)")
 	}
 
@@ -515,6 +611,15 @@ func (app *Application) NewHost(srv *http.Server) *host.Supervisor {
 
 	return su
 }
+
+// func (app *Application) OnShutdown(closers ...func()) {
+// 	for _,cb := range closers {
+// 		if cb == nil {
+// 			continue
+// 		}
+// 		RegisterOnInterrupt(cb)
+// 	}
+// }
 
 // Shutdown gracefully terminates all the application's server hosts and any tunnels.
 // Returns an error on the first failure, otherwise nil.
@@ -552,9 +657,9 @@ func (app *Application) Shutdown(ctx stdContext.Context) error {
 //
 // import "github.com/kataras/iris/v12/core/errgroup"
 //
-// errgroup.Walk(app.Build(), func(typ interface{}, err error) {
-// 	app.Logger().Errorf("%s: %s", typ, err)
-// })
+//	errgroup.Walk(app.Build(), func(typ interface{}, err error) {
+//		app.Logger().Errorf("%s: %s", typ, err)
+//	})
 func (app *Application) Build() error {
 	if app.builded {
 		return nil
@@ -562,7 +667,7 @@ func (app *Application) Build() error {
 
 	if cb := app.OnBuild; cb != nil {
 		if err := cb(); err != nil {
-			return err
+			return fmt.Errorf("build: %w", err)
 		}
 	}
 
@@ -618,16 +723,14 @@ func (app *Application) Build() error {
 		app.view.AddFunc("urlpath", rv.Path)
 		// app.view.AddFunc("url", rv.URL)
 		if err := app.view.Load(); err != nil {
-			app.logger.Errorf("View Builder: %v", err)
-			return err
+			return fmt.Errorf("build: view engine: %v", err)
 		}
 	}
 
 	if !app.Router.Downgraded() {
 		// router
 		if _, err := injectLiveReload(app); err != nil {
-			app.logger.Errorf("LiveReload: init: failed: %v", err)
-			return err
+			return fmt.Errorf("build: inject live reload: failed: %v", err)
 		}
 
 		if app.config.ForceLowercaseRouting {
@@ -644,8 +747,7 @@ func (app *Application) Build() error {
 		routerHandler := router.NewDefaultHandler(app.config, app.logger)
 		err := app.Router.BuildRouter(app.ContextPool, routerHandler, app.APIBuilder, false)
 		if err != nil {
-			app.logger.Error(err)
-			return err
+			return fmt.Errorf("build: router: %w", err)
 		}
 		app.HTTPErrorHandler = routerHandler
 
@@ -707,7 +809,7 @@ type Runner func(*Application) error
 // See `Run` for more.
 func Listener(l net.Listener, hostConfigs ...host.Configurator) Runner {
 	return func(app *Application) error {
-		app.config.vhost = netutil.ResolveVHost(l.Addr().String())
+		app.config.VHost = netutil.ResolveVHost(l.Addr().String())
 		return app.NewHost(&http.Server{Addr: l.Addr().String()}).
 			Configure(hostConfigs...).
 			Serve(l)
@@ -857,7 +959,8 @@ func TLS(addr string, certFileOrContents, keyFileOrContents string, hostConfigs 
 func AutoTLS(
 	addr string,
 	domain string, email string,
-	hostConfigs ...host.Configurator) Runner {
+	hostConfigs ...host.Configurator,
+) Runner {
 	return func(app *Application) error {
 		return app.NewHost(&http.Server{Addr: addr}).
 			Configure(hostConfigs...).
@@ -881,11 +984,23 @@ func Raw(f func() error) Runner {
 	}
 }
 
-// ErrServerClosed is returned by the Server's Serve, ServeTLS, ListenAndServe,
-// and ListenAndServeTLS methods after a call to Shutdown or Close.
-//
-// A shortcut for the `http#ErrServerClosed`.
-var ErrServerClosed = http.ErrServerClosed
+var (
+	// ErrServerClosed is logged by the standard net/http server when the server is terminated.
+	// Ignore it by passing this error to the `iris.WithoutServerError` configurator
+	// on `Application.Run/Listen` method.
+	//
+	// An alias of the `http#ErrServerClosed`.
+	ErrServerClosed = http.ErrServerClosed
+
+	// ErrURLQuerySemicolon is logged by the standard net/http server when
+	// the request contains a semicolon (;) wihch, after go1.17 it's not used as a key-value separator character.
+	//
+	// Ignore it by passing this error to the `iris.WithoutServerError` configurator
+	// on `Application.Run/Listen` method.
+	//
+	// An alias of the `http#ErrServerClosed`.
+	ErrURLQuerySemicolon = errors.New("http: URL query contains semicolon, which is no longer a supported separator; parts of the query may be stripped when parsed; see golang.org/issue/25192")
+)
 
 // Listen builds the application and starts the server
 // on the TCP network address "host:port" which
@@ -958,7 +1073,7 @@ func (app *Application) tryStartTunneling() {
 
 			publicAddr := publicAddrs[0]
 			// to make subdomains resolution still based on this new remote, public addresses.
-			app.config.vhost = publicAddr[strings.Index(publicAddr, "://")+3:]
+			app.config.VHost = publicAddr[strings.Index(publicAddr, "://")+3:]
 
 			directLog := []byte(fmt.Sprintf("• Public Address: %s\n", publicAddr))
 			app.logger.Printer.Write(directLog) // nolint:errcheck

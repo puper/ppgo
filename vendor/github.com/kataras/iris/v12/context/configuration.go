@@ -20,9 +20,9 @@ type ConfigurationReadOnly interface {
 	GetSocketSharding() bool
 	// GetKeepAlive returns the KeepAlive field.
 	GetKeepAlive() time.Duration
-	// GetKeepAlive returns the Timeout field.
+	// GetTimeout returns the Timeout field.
 	GetTimeout() time.Duration
-	// GetKeepAlive returns the TimeoutMessage field.
+	// GetTimeoutMessage returns the TimeoutMessage field.
 	GetTimeoutMessage() string
 	// GetDisablePathCorrection returns the DisablePathCorrection field
 	GetDisablePathCorrection() bool
@@ -38,11 +38,17 @@ type ConfigurationReadOnly interface {
 	GetFireMethodNotAllowed() bool
 	// GetDisableAutoFireStatusCode returns the DisableAutoFireStatusCode field.
 	GetDisableAutoFireStatusCode() bool
-	// ResetOnFireErrorCode retruns the ResetOnFireErrorCode field.
+	// GetResetOnFireErrorCode returns the ResetOnFireErrorCode field.
 	GetResetOnFireErrorCode() bool
-
+	// GetURLParamSeparator returns URLParamSeparator field.
+	GetURLParamSeparator() *string
 	// GetEnableOptimizations returns the EnableOptimizations field.
 	GetEnableOptimizations() bool
+	// GetEnableProtoJSON returns the EnableProtoJSON field.
+	GetEnableProtoJSON() bool
+	// GetEnableEasyJSON returns the EnableEasyJSON field.
+	GetEnableEasyJSON() bool
+
 	// GetDisableBodyConsumptionOnUnmarshal returns the DisableBodyConsumptionOnUnmarshal field.
 	GetDisableBodyConsumptionOnUnmarshal() bool
 	// GetFireEmptyFormError returns the FireEmptyFormError field.
@@ -55,7 +61,7 @@ type ConfigurationReadOnly interface {
 	// GetPostMaxMemory returns the PostMaxMemory field.
 	GetPostMaxMemory() int64
 
-	// GetTranslateLanguageContextKey returns the LocaleContextKey field.
+	// GetLocaleContextKey returns the LocaleContextKey field.
 	GetLocaleContextKey() string
 	// GetLanguageContextKey returns the LanguageContextKey field.
 	GetLanguageContextKey() string

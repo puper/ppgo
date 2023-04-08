@@ -11,25 +11,48 @@ import (
 // Implementing this interface means the ranger will be used when it's
 // encountered on the right hand side of a range's "let" expression.
 type Ranger interface {
+	// Range calls should return a key, a value and a done bool to indicate
+	// whether there are more values to be generated.
+	//
+	// When the done flag is true, then the loop ends.
 	Range() (reflect.Value, reflect.Value, bool)
+
+	// ProvidesIndex should return true if keys are produced during Range()
+	// calls. This call should be idempotent across Range() calls (i.e.
+	// its return value must not change during an iteration).
 	ProvidesIndex() bool
 }
 
 type intsRanger struct {
-	i, from, to int
+	i, val, to int64
 }
 
 var _ Ranger = &intsRanger{}
 
 func (r *intsRanger) Range() (index, value reflect.Value, end bool) {
-	index = reflect.ValueOf(r.i)
-	value = reflect.ValueOf(r.from + r.i)
-	end = r.i == r.to-r.from
 	r.i++
+	r.val++
+	end = r.val == r.to
+
+	// The indirection in the ValueOf calls avoids an allocation versus
+	// using the concrete value of 'i' and 'val'. The downside is having
+	// to interpret 'r.i' as "the current value" after Range() returns,
+	// and so it needs to be initialized as -1.
+	index = reflect.ValueOf(&r.i).Elem()
+	value = reflect.ValueOf(&r.val).Elem()
 	return
 }
 
 func (r *intsRanger) ProvidesIndex() bool { return true }
+
+func newIntsRanger(from, to int64) *intsRanger {
+	r := &intsRanger{
+		to:  to,
+		i:   -1,
+		val: from - 1,
+	}
+	return r
+}
 
 type pooledRanger interface {
 	Ranger

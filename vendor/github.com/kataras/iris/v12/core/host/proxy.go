@@ -22,7 +22,7 @@ import (
 // Look `ProxyHandlerRemote` too.
 func ProxyHandler(target *url.URL, config *tls.Config) *httputil.ReverseProxy {
 	if config == nil {
-		config = &tls.Config{}
+		config = &tls.Config{MinVersion: tls.VersionTLS13}
 	}
 
 	director := func(req *http.Request) {
@@ -31,7 +31,18 @@ func ProxyHandler(target *url.URL, config *tls.Config) *httputil.ReverseProxy {
 		req.URL.Path = path.Join(target.Path, req.URL.Path)
 	}
 
-	p := &httputil.ReverseProxy{Director: director}
+	// TODO: when go 1.20 released:
+	/*
+		rewrite := func(r *httputil.ProxyRequest) {
+			r.SetURL(target)  // Forward request to outboundURL.
+			r.SetXForwarded() // Set X-Forwarded-* headers.
+			// r.Out.Header.Set("X-Additional-Header", "header set by the proxy")
+			// To preserve the inbound request's Host header (the default behavior of NewSingleHostReverseProxy):
+			// r.Out.Host = r.In.Host
+		}
+	*/
+
+	p := &httputil.ReverseProxy{Director: director /*, Rewrite: rewrite */}
 
 	if netutil.IsLoopbackHost(target.Host) {
 		transport := &http.Transport{
@@ -89,7 +100,7 @@ func modifyProxiedRequest(req *http.Request, target *url.URL) {
 // Look `ProxyHandler` too.
 func ProxyHandlerRemote(target *url.URL, config *tls.Config) *httputil.ReverseProxy {
 	if config == nil {
-		config = &tls.Config{}
+		config = &tls.Config{MinVersion: tls.VersionTLS13}
 	}
 
 	director := func(req *http.Request) {

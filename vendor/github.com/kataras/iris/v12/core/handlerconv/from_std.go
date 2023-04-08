@@ -10,9 +10,10 @@ import (
 // FromStd converts native http.Handler & http.HandlerFunc to context.Handler.
 //
 // Supported form types:
-// 		 .FromStd(h http.Handler)
-// 		 .FromStd(func(w http.ResponseWriter, r *http.Request))
-// 		 .FromStd(func(w http.ResponseWriter, r *http.Request, next http.HandlerFunc))
+//
+//	.FromStd(h http.Handler)
+//	.FromStd(func(w http.ResponseWriter, r *http.Request))
+//	.FromStd(func(w http.ResponseWriter, r *http.Request, next http.HandlerFunc))
 func FromStd(handler interface{}) context.Handler {
 	switch h := handler.(type) {
 	case context.Handler:
@@ -31,6 +32,17 @@ func FromStd(handler interface{}) context.Handler {
 		// handlerFunc(w,r, http.HandlerFunc)
 		//
 		return FromStdWithNext(h)
+	case func(http.Handler) http.Handler:
+		panic(fmt.Errorf(`
+			Passed handler cannot be converted directly:
+			- http.Handler(http.Handler)
+			---------------------------------------------------------------------
+			Please use the Application.WrapRouter method instead, example code:
+			app := iris.New()
+			// ...
+			app.WrapRouter(func(w http.ResponseWriter, r *http.Request, router http.HandlerFunc) {
+			    httpThirdPartyHandler(router).ServeHTTP(w, r)
+			})`))
 	default:
 		// No valid handler passed
 		panic(fmt.Errorf(`

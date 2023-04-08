@@ -1,13 +1,15 @@
 # Minify <a name="minify"></a> [![API reference](https://img.shields.io/badge/godoc-reference-5272B4)](https://pkg.go.dev/github.com/tdewolff/minify/v2?tab=doc) [![Go Report Card](https://goreportcard.com/badge/github.com/tdewolff/minify)](https://goreportcard.com/report/github.com/tdewolff/minify) [![codecov](https://codecov.io/gh/tdewolff/minify/branch/master/graph/badge.svg?token=Cr7r2EKPj2)](https://codecov.io/gh/tdewolff/minify) [![Donate](https://img.shields.io/badge/patreon-donate-DFB317)](https://www.patreon.com/tdewolff)
 
-**[Online demo](https://go.tacodewolff.nl/minify) if you need to minify files *now*.**
+**[Online demo](https://go.tacodewolff.nl/minify)** if you need to minify files *now*.
 
-**[Command line tool](https://github.com/tdewolff/minify/tree/master/cmd/minify) that minifies concurrently and watches file changes.**
+**[Binaries](https://github.com/tdewolff/minify/releases) of CLI for various platforms.** See [CLI](https://github.com/tdewolff/minify/tree/master/cmd/minify) for more installation instructions.
 
-**[Releases](https://github.com/tdewolff/minify/releases) of CLI for various platforms.** See [CLI](https://github.com/tdewolff/minify/tree/master/cmd/minify) for more installation instructions.
+**[Python bindings](https://pypi.org/project/tdewolff-minify/)** install with `pip install tdewolff-minify`
 
-**[Parse](https://github.com/tdewolff/minify/tree/master/parse) subpackage on which minify depends.**
- 
+**[JavaScript bindings](https://www.npmjs.com/package/@tdewolff/minify)** install with `npm i @tdewolff/minify`
+
+**[.NET bindings](https://github.com/JKamsker/NMinify)** install with `Install-Package NMinify` or `dotnet add package NMinify`, thanks to Jonas Kamsker for the port
+
 ---
 
 *Did you know that the shortest valid piece of HTML5 is `<!doctype html><title>x</title>`? See for yourself at the [W3C Validator](http://validator.w3.org/)!*
@@ -59,6 +61,7 @@ Please see https://www.patreon.com/tdewolff for ways to contribute, otherwise pl
 		- [Custom minifier](#custom-minifier-example)
 		- [ResponseWriter](#responsewriter)
 		- [Templates](#templates)
+    - [FAQ](#faq)
 	- [License](#license)
 
 ### Roadmap
@@ -106,8 +109,7 @@ See [CLI tool](https://github.com/tdewolff/minify/tree/master/cmd/minify) for in
 If you want to use Docker, please see https://hub.docker.com/r/tdewolff/minify.
 
 ```bash
-$ docker run -it tdewolff/minify
-/ # minify --version
+$ docker run -it tdewolff/minify --help
 ```
 
 ## API stability
@@ -600,7 +602,33 @@ func main() {
 	m.AddFuncRegexp(regexp.MustCompile("[/+]xml$"), xml.Minify)
 
 	fs := http.FileServer(http.Dir("www/"))
-	http.Handle("/", m.Middleware(fs))
+	http.Handle("/", m.MiddlewareWithError(fs))
+}
+
+func handleError(w http.ResponseWriter, r *http.Request, err error) {
+    http.Error(w, err.Error(), http.StatusInternalServerError)
+}
+```
+
+In order to properly handle minify errors, it is necessary to close the response writer since all writes are concurrently handled. There is no need to check errors on writes since they will be returned on closing.
+
+```go
+func main() {
+	m := minify.New()
+	m.AddFunc("text/html", html.Minify)
+	m.AddFuncRegexp(regexp.MustCompile("^(application|text)/(x-)?(java|ecma)script$"), js.Minify)
+
+	input := `<script>const i = 1_000_</script>` // Faulty JS
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(input))
+
+		if err = w.(io.Closer).Close(); err != nil {
+			panic(err)
+		}
+	})).ServeHTTP(rec, req)
 }
 ```
 
@@ -691,6 +719,14 @@ Example usage:
 ``` go
 templates := template.Must(compileTemplates("view.html", "home.html"))
 ```
+
+## FAQ
+### Newlines remain in minified output
+While you might expect the minified output to be on a single line for it to be fully minified, this is not true. In many cases, using a literal newline doesn't affect the file size, and in some cases it may even reduce the file size.
+
+A typical example is HTML. Whitespace is significant in HTML, meaning that spaces and newlines between or around tags may affect how they are displayed. There is no distinction between a space or a newline and they may be interchanged without affecting the displayed HTML. Remember that a space (0x20) and a newline (0x0A) are both one byte long, so that there is no difference in file size when interchanging them. This minifier removes unnecessary whitespace by replacing stretches of spaces and newlines by a single whitespace character. Specifically, if the stretch of white space characters contains a newline, it will replace it by a newline and otherwise by a space. This doesn't affect the file size, but may help somewhat for debugging or file transmission objectives.
+
+Another example is JavaScript. Single or double quoted string literals may not contain newline characters but instead need to escape them as `\n`. These are two bytes instead of a single newline byte. Using template literals it is allowed to have literal newline characters and we can use that fact to shave-off one byte! The result is that the minified output contains newlines instead of escaped newline characters, which makes the final file size smaller. Of course, changing from single or double quotes to template literals depends on other factors as well, and this minifier makes a calculation whether the template literal results in a shorter file size or not before converting a string literal.
 
 ## License
 Released under the [MIT license](LICENSE.md).

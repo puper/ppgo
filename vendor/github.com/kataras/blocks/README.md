@@ -1,11 +1,11 @@
 # Blocks
 
-[![build status](https://img.shields.io/github/workflow/status/kataras/blocks/CI/master?style=for-the-badge)](https://github.com/kataras/blocks/actions) [![report card](https://img.shields.io/badge/report%20card-a%2B-ff3333.svg?style=for-the-badge)](https://goreportcard.com/report/github.com/kataras/blocks) [![godocs](https://img.shields.io/badge/go-%20docs-488AC7.svg?style=for-the-badge)](https://pkg.go.dev/github.com/kataras/blocks)
+[![build status](https://img.shields.io/github/workflow/status/kataras/blocks/CI/main?style=for-the-badge)](https://github.com/kataras/blocks/actions) [![report card](https://img.shields.io/badge/report%20card-a%2B-ff3333.svg?style=for-the-badge)](https://goreportcard.com/report/github.com/kataras/blocks) [![godocs](https://img.shields.io/badge/go-%20docs-488AC7.svg?style=for-the-badge)](https://pkg.go.dev/github.com/kataras/blocks)
 
 Blocks is a, simple, Go-idiomatic view engine based on [html/template](https://pkg.go.dev/html/template?tab=doc#Template), plus the following features:
 
-- Compatible with the [http.FileSystem](https://golang.org/pkg/net/http/#FileSystem) interface
-- Embedded templates through [go-bindata](https://github.com/go-bindata/go-bindata)
+- Compatible with the [fs.FS](https://pkg.go.dev/io/fs#FS), [embed.FS](https://pkg.go.dev/embed#FS) and [http.FileSystem](https://pkg.go.dev/net/http#FileSystem) interface
+- Embedded templates through [embed.FS](https://pkg.go.dev/embed#FS) or [go-bindata](https://github.com/go-bindata/go-bindata)
 - Load with optional context for cancelation
 - Reload templates on development stage
 - Full Layouts and Blocks support

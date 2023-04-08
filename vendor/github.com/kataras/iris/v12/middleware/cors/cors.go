@@ -85,17 +85,18 @@ type (
 // please refer to: https://github.com/iris-contrib/middleware repository instead.
 //
 // Example Code:
-//	import "github.com/kataras/iris/v12/middleware/cors"
-//  import "github.com/kataras/iris/v12/x/errors"
 //
-//  app.UseRouter(cors.New().
-//      HandleErrorFunc(func(ctx iris.Context, err error) {
-//          errors.FailedPrecondition.Err(ctx, err)
-//      }).
-//      ExtractOriginFunc(cors.StrictOriginExtractor).
-//      ReferrerPolicy(cors.NoReferrerWhenDowngrade).
-//      AllowOrigin("domain1.com,domain2.com,domain3.com").
-//      Handler())
+//		import "github.com/kataras/iris/v12/middleware/cors"
+//	 import "github.com/kataras/iris/v12/x/errors"
+//
+//	 app.UseRouter(cors.New().
+//	     HandleErrorFunc(func(ctx iris.Context, err error) {
+//	         errors.FailedPrecondition.Err(ctx, err)
+//	     }).
+//	     ExtractOriginFunc(cors.StrictOriginExtractor).
+//	     ReferrerPolicy(cors.NoReferrerWhenDowngrade).
+//	     AllowOrigin("domain1.com,domain2.com,domain3.com").
+//	     Handler())
 func New() *CORS {
 	return &CORS{
 		extractOriginFunc: DefaultOriginExtractor,
@@ -267,17 +268,30 @@ const (
 	allowCredentialsHeader = "Access-Control-Allow-Credentials"
 	referrerPolicyHeader   = "Referrer-Policy"
 	exposeHeadersHeader    = "Access-Control-Expose-Headers"
-
-	allowMethodsHeader   = "Access-Control-Allow-Methods"
-	allowAllMethodsValue = "*"
-	allowHeadersHeader   = "Access-Control-Allow-Headers"
-	maxAgeHeader         = "Access-Control-Max-Age"
+	requestMethodHeader    = "Access-Control-Request-Method"
+	requestHeadersHeader   = "Access-Control-Request-Headers"
+	allowMethodsHeader     = "Access-Control-Allow-Methods"
+	allowAllMethodsValue   = "*"
+	allowHeadersHeader     = "Access-Control-Allow-Headers"
+	maxAgeHeader           = "Access-Control-Max-Age"
+	varyHeader             = "Vary"
 )
+
+func (c *CORS) addVaryHeaders(ctx *context.Context) {
+	ctx.Header(varyHeader, originRequestHeader)
+
+	if ctx.Method() == http.MethodOptions {
+		ctx.Header(varyHeader, requestMethodHeader)
+		ctx.Header(varyHeader, requestHeadersHeader)
+	}
+}
 
 // Handler method returns the Iris CORS Handler with basic features.
 // Note that the caller should NOT modify any of the CORS instance fields afterwards.
 func (c *CORS) Handler() context.Handler {
 	return func(ctx *context.Context) {
+		c.addVaryHeaders(ctx) // add vary headers at any case.
+
 		origin, ok := c.extractOriginFunc(ctx)
 		if !ok || !c.allowOriginFunc(ctx, origin) {
 			c.errorHandler(ctx, ErrOriginNotAllowed)

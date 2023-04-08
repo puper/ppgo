@@ -18,7 +18,9 @@ import (
 // Note that the builtin macros return error too, but they're handled
 // by the `else` literal (error code). To change this behavior
 // and send a custom error response you have to register it:
-//  app.Macros().Get("uuid").HandleError(func(ctx iris.Context, paramIndex int, err error)).
+//
+//	app.Macros().Get("uuid").HandleError(func(ctx iris.Context, paramIndex int, err error)).
+//
 // You can also set custom macros by `app.Macros().Register`.
 //
 // See macro.HandleError to set it.
@@ -36,7 +38,8 @@ func CanMakeHandler(tmpl macro.Template) (needsMacroHandler bool) {
 	// check if we have params like: {name:string} or {name} or {anything:path} without else keyword or any functions used inside these params.
 	// 1. if we don't have, then we don't need to add a handler before the main route's handler (as I said, no performance if macro is not really used)
 	// 2. if we don't have any named params then we don't need a handler too.
-	for _, p := range tmpl.Params {
+	for i := range tmpl.Params {
+		p := tmpl.Params[i]
 		if p.CanEval() {
 			// if at least one needs it, then create the handler.
 			needsMacroHandler = true
@@ -44,7 +47,7 @@ func CanMakeHandler(tmpl macro.Template) (needsMacroHandler bool) {
 			if p.HandleError != nil {
 				// Check for its type.
 				if _, ok := p.HandleError.(ParamErrorHandler); !ok {
-					panic(fmt.Sprintf("HandleError must be a type of func(iris.Context, int, error) but got: %T", p.HandleError))
+					panic(fmt.Sprintf("HandleError input argument must be a type of func(iris.Context, int, error) but got: %T", p.HandleError))
 				}
 			}
 			break
@@ -85,7 +88,8 @@ func MakeFilter(tmpl macro.Template) context.Filter {
 	}
 
 	return func(ctx *context.Context) bool {
-		for _, p := range tmpl.Params {
+		for i := range tmpl.Params {
+			p := tmpl.Params[i]
 			if !p.CanEval() {
 				continue // allow.
 			}
@@ -103,6 +107,7 @@ func MakeFilter(tmpl macro.Template) context.Filter {
 			entry, found := ctx.Params().Store.GetEntryAt(p.Index)
 			if !found {
 				// should never happen.
+				ctx.StatusCode(p.ErrCode) // status code can change from an error handler, set it here.
 				return false
 			}
 

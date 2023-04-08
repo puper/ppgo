@@ -7,10 +7,10 @@ import (
 
 	"github.com/tdewolff/minify/v2"
 	"github.com/tdewolff/minify/v2/css"
+	minifyXML "github.com/tdewolff/minify/v2/xml"
 	"github.com/tdewolff/parse/v2"
 	"github.com/tdewolff/parse/v2/buffer"
 	"github.com/tdewolff/parse/v2/xml"
-	minifyXML "github.com/tdewolff/minify/v2/xml"
 )
 
 var (
@@ -28,6 +28,7 @@ var (
 
 // Minifier is an SVG minifier.
 type Minifier struct {
+	KeepComments bool
 	Precision    int // number of significant digits
 	newPrecision int // precision for new numbers
 }
@@ -69,6 +70,10 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 				return nil
 			}
 			return l.Err()
+		case xml.CommentToken:
+			if o.KeepComments {
+				w.Write(t.Data)
+			}
 		case xml.DOCTYPEToken:
 			if len(t.Text) > 0 && t.Text[len(t.Text)-1] == ']' {
 				w.Write(t.Data)
@@ -116,8 +121,6 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 			tag = t.Hash
 			if tag == Metadata {
 				t.Data = nil
-			} else if tag == Rect {
-				o.shortenRect(tb, &t)
 			}
 
 			if t.Data == nil {
@@ -254,22 +257,6 @@ func (o *Minifier) shortenDimension(b []byte) ([]byte, int) {
 		return b, n + m
 	}
 	return b, 0
-}
-
-func (o *Minifier) shortenRect(tb *TokenBuffer, t *Token) {
-	w, h := zeroBytes, zeroBytes
-	attrs := tb.Attributes(Width, Height)
-	if attrs[0] != nil {
-		n, _ := parse.Dimension(attrs[0].AttrVal)
-		w = minify.Number(attrs[0].AttrVal[:n], o.Precision)
-	}
-	if attrs[1] != nil {
-		n, _ := parse.Dimension(attrs[1].AttrVal)
-		h = minify.Number(attrs[1].AttrVal[:n], o.Precision)
-	}
-	if len(w) == 0 || w[0] == '0' || len(h) == 0 || h[0] == '0' {
-		t.Data = nil
-	}
 }
 
 ////////////////////////////////////////////////////////////////
