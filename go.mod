@@ -1,6 +1,6 @@
 module github.com/puper/ppgo
 
-go 1.20
+go 1.21
 
 require (
 	github.com/facebookgo/grace v0.0.0-20180706040059-75cf19382434
@@ -22,8 +22,8 @@ require (
 	golang.org/x/crypto v0.8.0
 	google.golang.org/grpc v1.54.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
-	gorm.io/driver/mysql v1.4.7
-	gorm.io/gorm v1.24.6
+	gorm.io/driver/mysql v1.5.1
+	gorm.io/gorm v1.25.3
 )
 
 require (
