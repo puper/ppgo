@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/puper/ppgo/v2/errors"
 	"github.com/spf13/viper"
 )
 
@@ -73,10 +72,9 @@ func (this *Engine) Close() error {
 
 func (this *Engine) close() error {
 	this.graph.TopologicalOrdering()
-	multiErrs := errors.NewMultiErrors()
 	names, err := this.graph.TopologicalOrdering()
 	if err != nil {
-		return multiErrs.Add(err)
+		return err
 	}
 	for i := len(names) - 1; i >= 0; i-- {
 		name := names[i]
@@ -84,12 +82,9 @@ func (this *Engine) close() error {
 			fmt.Printf("close component `%v`\n", name)
 			delete(this.instances, name)
 			if closer, ok := instance.(Closer); ok {
-				multiErrs.Add(closer.Close())
+				closer.Close()
 			}
 		}
-	}
-	if multiErrs.HasError() {
-		return multiErrs
 	}
 	return nil
 }
